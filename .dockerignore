@@ -1,0 +1,14 @@
+**/bin/
+**/obj/
+**/.vs/
+.git/
+.idea/
+.vscode/
+.claude/
+test-assets/
+src/YARG.Online.Game.Contracts - Copy/
+**/Dockerfile
+.dockerignore
+docker-compose.yml
+README.md
+*.md

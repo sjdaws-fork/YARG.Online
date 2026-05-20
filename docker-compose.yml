@@ -1,0 +1,37 @@
+services:
+  lobbies:
+    build:
+      context: .
+      dockerfile: src/YARG.Online.Lobbies/Dockerfile
+    ports:
+      - "5230:5230"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__Redis: host.docker.internal:6379
+      Auth__Issuer: yarg-online-dev
+      Auth__Audience: yarg-online-dev
+      Auth__SigningSecret: dev-only-do-not-use-in-prod-please-change-me-32b+
+      GameAuth__Issuer: yarg-online-game-dev
+      GameAuth__Audience: yarg-online-game-dev
+      GameAuth__SigningSecret: dev-only-game-secret-do-not-use-in-prod-32b+++
+      GameServer__Endpoint: localhost:9050
+      GameServer__ConnectionKey: yarg-online-game-dev
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  game:
+    build:
+      context: .
+      dockerfile: src/YARG.Online.Game/Dockerfile
+    depends_on:
+      - lobbies
+    ports:
+      - "9050:9050/udp"
+    environment:
+      DOTNET_ENVIRONMENT: Development
+      Network__Port: 9050
+      Network__ConnectionKey: yarg-online-game-dev
+      GameAuth__Issuer: yarg-online-game-dev
+      GameAuth__Audience: yarg-online-game-dev
+      GameAuth__SigningSecret: dev-only-game-secret-do-not-use-in-prod-32b+++
+      Lobbies__BaseUrl: http://lobbies:5230/

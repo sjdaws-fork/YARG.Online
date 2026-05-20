@@ -1,0 +1,231 @@
+using YARG.Online.Lobbies.Contracts.Enums;
+using YARG.Online.Lobbies.Contracts.Hubs;
+using YARG.Online.Lobbies.Domain;
+
+namespace YARG.Online.Lobbies.Lobbies;
+
+public enum JoinResult
+{
+    Joined,
+    AlreadyMember,
+    NotFound,
+    Full,
+    Banned,
+}
+
+public enum LeaveOutcome
+{
+    NotFound,
+    Left,
+    LobbyClosed,
+}
+
+public sealed record SongLibraryDelta(IReadOnlyList<string> Added, IReadOnlyList<string> Removed);
+
+public sealed record QueueAvailabilityDelta(long Sequence, IReadOnlyList<string> AddedMissing, IReadOnlyList<string> RemovedMissing);
+
+/// <summary>
+/// Returned when a leave or kick causes the host role to move to another member.
+/// Non-null only when the lobby survives (i.e. at least one member remains).
+/// </summary>
+public sealed record HostChange(string NewHostUserId, string NewHostName);
+
+public sealed record JoinResultData(
+    JoinResult Result,
+    Lobby? Lobby,
+    SongLibraryDelta? Delta,
+    IReadOnlyCollection<string>? LobbySongLibrarySnapshot,
+    IReadOnlyList<QueueAvailabilityDelta>? QueueAvailabilityUpdates);
+
+public sealed record LeaveResult(
+    LeaveOutcome Outcome,
+    Lobby? Lobby,
+    SongLibraryDelta? Delta,
+    IReadOnlyList<long>? RemovedQueueEntries,
+    IReadOnlyList<QueueAvailabilityDelta>? QueueAvailabilityUpdates,
+    HostChange? HostChange);
+
+public enum EnqueueOutcome
+{
+    Added,
+    NotFound,
+    NotMember,
+    NotInLibrary,
+    QueueFull,
+}
+
+public sealed record EnqueueResult(EnqueueOutcome Outcome, QueuedSong? Entry);
+
+public enum RemoveQueuedSongOutcome
+{
+    Removed,
+    NotFound,
+    NotMember,
+    EntryMissing,
+    NotPermitted,
+}
+
+public sealed record RemoveQueuedSongResult(RemoveQueuedSongOutcome Outcome, QueuedSong? Entry);
+
+public enum TransferHostOutcome
+{
+    Transferred,
+    NotFound,
+    NotHost,
+    TargetNotMember,
+    TargetIsHost,
+}
+
+public sealed record TransferHostResult(TransferHostOutcome Outcome, Lobby? Lobby, HostChange? Change);
+
+public enum KickOutcome
+{
+    Kicked,
+    NotFound,
+    NotHost,
+    TargetNotMember,
+    TargetIsHost,
+}
+
+public sealed record KickResult(
+    KickOutcome Outcome,
+    Lobby? Lobby,
+    SongLibraryDelta? Delta,
+    IReadOnlyList<long>? RemovedQueueEntries,
+    IReadOnlyList<QueueAvailabilityDelta>? QueueAvailabilityUpdates);
+
+public enum StartGameOutcome
+{
+    Started,
+    NotFound,
+    NotHost,
+    AlreadyStarted,
+    NotEnoughPlayers,
+    QueueEmpty,
+}
+
+public sealed record StartGameMember(string UserId, string DisplayName);
+
+public sealed record StartGameResultData(
+    StartGameOutcome Outcome,
+    Lobby? Lobby,
+    IReadOnlyList<StartGameMember>? Members);
+
+public enum FinishGameOutcome
+{
+    Finished,
+    NotFound,
+    NotStarted,
+}
+
+public sealed record FinishGameResultData(FinishGameOutcome Outcome, Lobby? Lobby, QueuedSong? PlayedSong);
+
+public enum SongStartedOutcome
+{
+    Set,
+    NotFound,
+    NotStarted,
+}
+
+public sealed record SongStartedResultData(SongStartedOutcome Outcome, Lobby? Lobby);
+
+public interface ILobbyRepository
+{
+    /// <summary>Persist a new lobby with the host's initial song library. Returns false if the slug already exists (rare collision).</summary>
+    Task<bool> CreateAsync(Lobby lobby, IReadOnlyCollection<string> hostLibrary, CancellationToken ct);
+
+    Task<Lobby?> GetAsync(string lobbyId, CancellationToken ct);
+
+    Task<JoinResultData> JoinAsync(string lobbyId, string userId, string displayName, IReadOnlyCollection<string> library, CancellationToken ct);
+
+    Task<LeaveResult> LeaveAsync(string lobbyId, string userId, CancellationToken ct);
+
+    Task<bool> IsMemberAsync(string lobbyId, string userId, CancellationToken ct);
+
+    Task<IReadOnlyList<LobbyMemberDto>> GetMembersAsync(string lobbyId, CancellationToken ct);
+
+    Task<LobbySearchResult> SearchAsync(LobbySearchQuery query, CancellationToken ct);
+
+    /// <summary>
+    /// Appends a chat message to the lobby's bounded history. Returns the stored message
+    /// (with server-assigned <see cref="ChatMessage.Sequence"/>) or null if the lobby
+    /// is missing or the sender is not a member.
+    /// </summary>
+    Task<ChatMessage?> AppendChatMessageAsync(
+        string lobbyId,
+        string userId,
+        string displayName,
+        string text,
+        DateTimeOffset sentAt,
+        CancellationToken ct);
+
+    Task<IReadOnlyList<ChatMessage>> GetChatHistoryAsync(string lobbyId, CancellationToken ct);
+
+    /// <summary>
+    /// Append a song to the lobby's queue on behalf of <paramref name="userId"/>. The requester
+    /// must be a lobby member and must own the song; their ID is therefore never present in the
+    /// returned entry's <see cref="QueuedSong.MissingFor"/>.
+    /// </summary>
+    Task<EnqueueResult> EnqueueSongAsync(
+        string lobbyId,
+        string userId,
+        string songHash,
+        DateTimeOffset now,
+        CancellationToken ct);
+
+    /// <summary>
+    /// Remove a queued song. Allowed only when the caller is the lobby host or the original requester.
+    /// </summary>
+    Task<RemoveQueuedSongResult> RemoveQueuedSongAsync(
+        string lobbyId,
+        string userId,
+        long sequence,
+        CancellationToken ct);
+
+    /// <summary>Snapshot of the lobby's current song queue, ordered by insertion.</summary>
+    Task<IReadOnlyList<QueuedSong>> GetQueueAsync(string lobbyId, CancellationToken ct);
+
+    /// <summary>
+    /// Transfer the host role from <paramref name="callerUserId"/> to <paramref name="targetUserId"/>.
+    /// Both must be current members; the caller must be the current host.
+    /// </summary>
+    Task<TransferHostResult> TransferHostAsync(string lobbyId, string callerUserId, string targetUserId, CancellationToken ct);
+
+    /// <summary>
+    /// Remove <paramref name="targetUserId"/> from the lobby on behalf of the host. Same side-effects
+    /// as a non-host leave (library re-intersection, queue cleanup), plus the target is added to the
+    /// lobby's banned set for the lobby's remaining lifetime.
+    /// </summary>
+    Task<KickResult> KickPlayerAsync(string lobbyId, string callerUserId, string targetUserId, CancellationToken ct);
+
+    /// <summary>
+    /// Transition the lobby to <see cref="LobbyStatus.GameStarted"/>. Allowed only when the caller is the
+    /// current host, the lobby is currently in <see cref="LobbyStatus.SongSelect"/>, there are at least
+    /// two members, and the song queue is non-empty. On success the returned <see cref="StartGameResultData.Members"/>
+    /// lists every current member (with display name) so the hub can mint per-user tokens.
+    /// </summary>
+    Task<StartGameResultData> StartGameAsync(string lobbyId, string callerUserId, CancellationToken ct);
+
+    /// <summary>
+    /// Transition the lobby back to <see cref="LobbyStatus.SongSelect"/>. Used by the
+    /// game-finished REST callback. Only valid when the lobby is currently <see cref="LobbyStatus.GameStarted"/>.
+    /// Pops the head of the song queue (the song that was being played) and clears the
+    /// lobby's <see cref="Lobby.SongStartedAt"/>/<see cref="Lobby.SongDurationMs"/> runtime fields.
+    /// The popped entry is surfaced as <see cref="FinishGameResultData.PlayedSong"/> so the caller
+    /// can broadcast the removal with <see cref="SongRemovalReason.Played"/>.
+    /// </summary>
+    Task<FinishGameResultData> FinishGameAsync(string lobbyId, CancellationToken ct);
+
+    /// <summary>
+    /// Record the wall-clock instant and chart duration at which the in-progress song actually
+    /// began playing. Called by the game server once it has broadcast <c>GameStartCue</c> to all
+    /// peers. Only valid while the lobby is in <see cref="LobbyStatus.GameStarted"/>; returns
+    /// <see cref="SongStartedOutcome.NotStarted"/> if the game already finished (e.g. a
+    /// member-departure cascade ended the session before the cue post arrived).
+    /// </summary>
+    Task<SongStartedResultData> SongStartedAsync(
+        string lobbyId,
+        DateTimeOffset startedAt,
+        int durationMs,
+        CancellationToken ct);
+}

@@ -1,0 +1,8 @@
+{
+  "name": "in.yarg.online-lobbies-contracts",
+  "version": "0.1.0",
+  "displayName": "YARG.Online.Lobbies.Contracts",
+  "description": "Shared contracts (REST DTOs, enums, SignalR hub interfaces) for YARG's online lobby browser/room flows.",
+  "unity": "2021.3",
+  "license": "MIT"
+}

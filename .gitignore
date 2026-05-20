@@ -1,0 +1,32 @@
+# .NET build output
+bin/
+bin~/
+obj/
+obj~/
+*.user
+*.suo
+.vs/
+.vscode/
+.idea/
+
+# Rider
+*.DotSettings.user
+
+# Test results
+TestResults/
+*.coverage
+*.coverage.*
+
+# NuGet
+*.nupkg
+.nuget/
+
+# Tools
+tools/node_modules/
+tools/package-lock.json
+
+# Misc
+*.log
+.DS_Store
+Thumbs.db
+*.meta

@@ -1,0 +1,8 @@
+{
+  "name": "in.yarg.online-game-contracts",
+  "version": "0.1.0",
+  "displayName": "YARG.Online.Game.Contracts",
+  "description": "Shared LiteNetLib packet contracts for YARG's online in-game networking protocol.",
+  "unity": "2021.3",
+  "license": "MIT"
+}
