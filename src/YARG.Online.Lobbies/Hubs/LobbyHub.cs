@@ -668,6 +668,30 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
                 .OnPlayerLobbyReadyChanged(new PlayerLobbyReadyChangedEvent(
                     lobbyId, userId, IsBackInLobby: true));
         }
+        else if (result.Outcome == LeaveResultsOutcome.MarkedBackInLobbyAndGameEnded)
+        {
+            // Every member is now back in the lobby AND we were mid-song;
+            // the repo transitioned the lobby back to SongSelect to mirror
+            // FinishGameAsync's broadcast set. Without this path the lobby
+            // would stay stuck in GameStarted when everyone bails early via
+            // the in-game Quit button, and the host would see "song still
+            // active" trying to start the next round.
+            await Clients.Group(LobbyGroup(lobbyId))
+                .OnPlayerLobbyReadyChanged(new PlayerLobbyReadyChangedEvent(
+                    lobbyId, userId, IsBackInLobby: true));
+            await Clients.Group(LobbyGroup(lobbyId))
+                .OnLobbyStatusChanged(new LobbyStatusChangedEvent(lobbyId, LobbyStatus.SongSelect));
+            if (result.AbandonedSong is { } abandoned)
+            {
+                await Clients.Group(LobbyGroup(lobbyId))
+                    .OnSongRemovedFromQueue(new SongRemovedFromQueueEvent(
+                        lobbyId, abandoned.Sequence, SongRemovalReason.Played));
+            }
+            if (result.Lobby is { } updated)
+            {
+                _buffer.Enqueue(new LobbyChange(lobbyId, LobbyChangeKind.Updated, _mapper.Map<LobbyDto>(updated)));
+            }
+        }
         // Other outcomes are no-ops or harmless duplicates — no broadcast.
     }
 

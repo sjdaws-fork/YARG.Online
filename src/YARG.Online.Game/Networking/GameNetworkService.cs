@@ -422,6 +422,9 @@ public sealed class GameNetworkService : BackgroundService
                 case PacketOpcode.VocalPitch:
                     HandleVocalPitch(peer, reader);
                     break;
+                case PacketOpcode.FreePlayInput:
+                    HandleFreePlayInput(peer, reader);
+                    break;
                 case PacketOpcode.SustainReleased:
                     HandleSustainReleased(peer, reader);
                     break;
@@ -582,6 +585,25 @@ public sealed class GameNetworkService : BackgroundService
         packet.PeerId = peer.Id;
         var writer = new NetDataWriter();
         GamePacketWriter.Write(writer, PacketOpcode.VocalPitch, packet);
+        foreach (var target in targets)
+        {
+            _relay.Send(target, writer, DeliveryMethod.ReliableOrdered);
+        }
+    }
+
+    private void HandleFreePlayInput(NetPeer peer, NetPacketReader reader)
+    {
+        var packet = new FreePlayInputPacket();
+        packet.Deserialize(reader);
+
+        if (!_sessions.TryGetFanoutTargets(peer.Id, out var targets) || targets.Count == 0)
+        {
+            return;
+        }
+
+        packet.PeerId = peer.Id;
+        var writer = new NetDataWriter();
+        GamePacketWriter.Write(writer, PacketOpcode.FreePlayInput, packet);
         foreach (var target in targets)
         {
             _relay.Send(target, writer, DeliveryMethod.ReliableOrdered);
