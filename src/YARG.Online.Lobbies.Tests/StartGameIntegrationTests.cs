@@ -89,6 +89,12 @@ public class StartGameIntegrationTests : IClassFixture<StartGameIntegrationTests
         // Alice starts the game.
         await aliceConn.InvokeAsync(nameof(ILobbyHub.StartGame));
 
+        // The Starting status is broadcast before allocation runs.
+        var aliceStarting = await alice.NextStatusChanged();
+        var bobStarting = await bob.NextStatusChanged();
+        Assert.Equal(LobbyStatus.Starting, aliceStarting.Status);
+        Assert.Equal(LobbyStatus.Starting, bobStarting.Status);
+
         var aliceStart = await alice.NextGameStarted();
         var bobStart = await bob.NextGameStarted();
 
@@ -253,10 +259,12 @@ public class StartGameIntegrationTests : IClassFixture<StartGameIntegrationTests
         await bob.NextSongQueued();
 
         await aliceConn.InvokeAsync(nameof(ILobbyHub.StartGame));
+        await alice.NextStatusChanged(); // Starting
+        await bob.NextStatusChanged();   // Starting
         await alice.NextGameStarted();
         await bob.NextGameStarted();
-        await alice.NextStatusChanged();
-        await bob.NextStatusChanged();
+        await alice.NextStatusChanged(); // GameStarted
+        await bob.NextStatusChanged();   // GameStarted
 
         var ex = await Assert.ThrowsAsync<Microsoft.AspNetCore.SignalR.HubException>(
             () => aliceConn.InvokeAsync(nameof(ILobbyHub.StartGame)));

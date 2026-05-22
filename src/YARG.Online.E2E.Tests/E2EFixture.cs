@@ -8,6 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Xunit;
+using YARG.Online.Game.Agones;
 using YARG.Online.Game.Auth;
 using YARG.Online.Game.Lobbies;
 using YARG.Online.Game.Networking;
@@ -82,6 +83,7 @@ public sealed class E2EFixture : IAsyncLifetime
         builder.Services.AddSingleton<IGameJwtValidator, GameJwtValidator>();
         builder.Services.AddSingleton<AuthenticatedPeerRegistry>();
         builder.Services.AddSingleton<GameSessionManager>();
+        builder.Services.AddSingleton<AgonesReadinessSignal>();
 
         builder.Services.AddHttpClient<ILobbiesClient, LobbiesClient>((sp, http) =>
         {

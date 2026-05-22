@@ -1,0 +1,22 @@
+{{- if .Values.agones.enabled }}
+# Lives in the GameServer namespace (where the Fleet and its pods are created),
+# not the lobbies namespace, because Role grants are namespace-scoped.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-lobbies-allocator
+  namespace: {{ .Values.agones.gameServerNamespace }}
+  labels:
+    app.kubernetes.io/name: yarg-online-lobbies
+    app.kubernetes.io/instance: {{ .Release.Name }}
+rules:
+  - apiGroups: ["allocation.agones.dev"]
+    resources: ["gameserverallocations"]
+    verbs: ["create"]
+  - apiGroups: ["agones.dev"]
+    resources: ["gameservers"]
+    verbs: ["get", "list", "patch", "delete"]
+  - apiGroups: ["agones.dev"]
+    resources: ["gameservers/status"]
+    verbs: ["patch", "update"]
+{{- end }}

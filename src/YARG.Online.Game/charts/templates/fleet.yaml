@@ -1,0 +1,51 @@
+apiVersion: agones.dev/v1
+kind: Fleet
+metadata:
+  name: {{ .Values.fleet.name }}
+  labels:
+    app.kubernetes.io/name: yarg-online-game
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  replicas: {{ .Values.fleet.replicas }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: yarg-online-game
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      ports:
+        - name: game
+          portPolicy: {{ .Values.fleet.portPolicy }}
+          containerPort: {{ .Values.fleet.containerPort }}
+          protocol: {{ .Values.fleet.protocol }}
+      lists:
+        slots:
+          capacity: {{ .Values.fleet.slotsCapacity }}
+      health:
+        initialDelaySeconds: {{ .Values.fleet.health.initialDelaySeconds }}
+        periodSeconds: {{ .Values.fleet.health.periodSeconds }}
+        failureThreshold: {{ .Values.fleet.health.failureThreshold }}
+      template:
+        spec:
+          {{- with .Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: game
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              env:
+                - name: DOTNET_ENVIRONMENT
+                  value: {{ .Values.env.dotnetEnvironment | default "Development" }}
+                - name: Agones__Enabled
+                  value: "true"
+                - name: POD_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+              envFrom:
+                - secretRef:
+                    name: yarg-online-game-secrets
+              resources:
+                {{- toYaml .Values.fleet.resources | nindent 16 }}

@@ -1,0 +1,31 @@
+# Non-secret production config for the OCI/OKE deployment.
+# Loaded by the `oci-prod` Skaffold profile. Secrets live in the gitignored
+# values.oci-prod.secrets.yaml (see values.oci-prod.secrets.yaml.example).
+
+# image.repository is injected by Skaffold (from the oci-prod default-repo);
+# only the production pullPolicy is set here.
+image:
+  pullPolicy: Always
+
+env:
+  aspNetCoreEnvironment: Production
+
+# OKE `services` node pool (Pulumi initial node label workload=services).
+nodeSelector:
+  workload: services
+
+httpRoute:
+  enabled: true
+  hostname: lobbies.yarg.online
+  parentRef:
+    name: main
+    namespace: yarg-online-envoy-gateway-system
+
+networkPolicy:
+  gameServerNamespace: yarg-online-game
+
+agones:
+  enabled: true
+  gameServerNamespace: yarg-online-game
+  fleetName: game-fleet
+  slotsKey: slots

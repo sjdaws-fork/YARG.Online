@@ -1,0 +1,12 @@
+# Copy to values.local.yaml (gitignored). MUST stay in sync with the lobby's
+# values.local.yaml: identical GameAuth__* values (the lobby signs JWTs the
+# game pod has to validate) and identical connection key (the lobby's
+# GameServer__ConnectionKey must equal Network__ConnectionKey here).
+secrets:
+  GameAuth__Issuer: yarg-online-game-dev
+  GameAuth__Audience: yarg-online-game-dev
+  GameAuth__SigningSecret: dev-only-game-secret-do-not-use-in-prod-32b+++
+  Network__ConnectionKey: yarg-online-game-dev
+  # Internal-only Gateway for the lobbies game-server callbacks (ClusterIP Envoy,
+  # restricted to game-server pods by NetworkPolicy). Port 80, not the pod's 5230.
+  Lobbies__BaseUrl: http://lobbies-internal-gateway.yarg-online-local-envoy-gateway-system.svc.cluster.local/

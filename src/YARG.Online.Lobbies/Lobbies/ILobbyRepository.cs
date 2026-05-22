@@ -1,3 +1,4 @@
+using YARG.Online.Lobbies.Allocation;
 using YARG.Online.Lobbies.Contracts.Enums;
 using YARG.Online.Lobbies.Contracts.Hubs;
 using YARG.Online.Lobbies.Domain;
@@ -99,6 +100,7 @@ public enum StartGameOutcome
     Started,
     NotFound,
     NotHost,
+    AlreadyStarting,
     AlreadyStarted,
     NotEnoughPlayers,
     QueueEmpty,
@@ -106,10 +108,19 @@ public enum StartGameOutcome
 
 public sealed record StartGameMember(string UserId, string DisplayName);
 
-public sealed record StartGameResultData(
+public sealed record BeginStartGameResultData(
     StartGameOutcome Outcome,
     Lobby? Lobby,
     IReadOnlyList<StartGameMember>? Members);
+
+public enum ConfirmStartGameOutcome
+{
+    Started,
+    NotFound,
+    NotStarting,
+}
+
+public sealed record ConfirmStartGameResultData(ConfirmStartGameOutcome Outcome, Lobby? Lobby);
 
 public enum FinishGameOutcome
 {
@@ -118,7 +129,11 @@ public enum FinishGameOutcome
     NotStarted,
 }
 
-public sealed record FinishGameResultData(FinishGameOutcome Outcome, Lobby? Lobby, QueuedSong? PlayedSong);
+public sealed record FinishGameResultData(
+    FinishGameOutcome Outcome,
+    Lobby? Lobby,
+    QueuedSong? PlayedSong,
+    GameAllocation? Allocation);
 
 public enum SongStartedOutcome
 {
@@ -199,12 +214,29 @@ public interface ILobbyRepository
     Task<KickResult> KickPlayerAsync(string lobbyId, string callerUserId, string targetUserId, CancellationToken ct);
 
     /// <summary>
-    /// Transition the lobby to <see cref="LobbyStatus.GameStarted"/>. Allowed only when the caller is the
+    /// Transition the lobby to <see cref="LobbyStatus.Starting"/>. Allowed only when the caller is the
     /// current host, the lobby is currently in <see cref="LobbyStatus.SongSelect"/>, there are at least
-    /// two members, and the song queue is non-empty. On success the returned <see cref="StartGameResultData.Members"/>
-    /// lists every current member (with display name) so the hub can mint per-user tokens.
+    /// two members, and the song queue is non-empty. On success the returned <see cref="BeginStartGameResultData.Members"/>
+    /// lists every current member (with display name) so the caller can subsequently allocate a game
+    /// server for that many slots and mint per-user tokens. Caller must follow this with either
+    /// <see cref="ConfirmStartGameAsync"/> (on allocation success) or <see cref="AbortStartGameAsync"/>
+    /// (on allocation failure).
     /// </summary>
-    Task<StartGameResultData> StartGameAsync(string lobbyId, string callerUserId, CancellationToken ct);
+    Task<BeginStartGameResultData> BeginStartGameAsync(string lobbyId, string callerUserId, CancellationToken ct);
+
+    /// <summary>
+    /// Transition the lobby from <see cref="LobbyStatus.Starting"/> to <see cref="LobbyStatus.GameStarted"/>
+    /// and store the resolved <paramref name="allocation"/> on the lobby so <see cref="FinishGameAsync"/>
+    /// can surface it for slot release.
+    /// </summary>
+    Task<ConfirmStartGameResultData> ConfirmStartGameAsync(string lobbyId, GameAllocation allocation, CancellationToken ct);
+
+    /// <summary>
+    /// Roll the lobby back from <see cref="LobbyStatus.Starting"/> to <see cref="LobbyStatus.SongSelect"/>
+    /// after a failed allocation. Idempotent: a lobby that is already in <see cref="LobbyStatus.SongSelect"/>
+    /// (or has been deleted) is a no-op.
+    /// </summary>
+    Task AbortStartGameAsync(string lobbyId, CancellationToken ct);
 
     /// <summary>
     /// Transition the lobby back to <see cref="LobbyStatus.SongSelect"/>. Used by the
@@ -212,7 +244,9 @@ public interface ILobbyRepository
     /// Pops the head of the song queue (the song that was being played) and clears the
     /// lobby's <see cref="Lobby.SongStartedAt"/>/<see cref="Lobby.SongDurationMs"/> runtime fields.
     /// The popped entry is surfaced as <see cref="FinishGameResultData.PlayedSong"/> so the caller
-    /// can broadcast the removal with <see cref="SongRemovalReason.Played"/>.
+    /// can broadcast the removal with <see cref="SongRemovalReason.Played"/>. The lobby's stored
+    /// <see cref="GameAllocation"/> is returned as <see cref="FinishGameResultData.Allocation"/> and
+    /// cleared from the entry so the caller can release slots via <see cref="IGameEndedHandler"/>.
     /// </summary>
     Task<FinishGameResultData> FinishGameAsync(string lobbyId, CancellationToken ct);
 

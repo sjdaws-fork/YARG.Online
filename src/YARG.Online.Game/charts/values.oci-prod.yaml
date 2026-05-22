@@ -1,0 +1,33 @@
+# Non-secret production config for the OCI/OKE deployment.
+# Loaded by the `oci-prod` Skaffold profile. Secrets live in the gitignored
+# values.oci-prod.secrets.yaml (see values.oci-prod.secrets.yaml.example).
+
+# image.repository is injected by Skaffold (from the oci-prod default-repo);
+# only the production pullPolicy is set here.
+image:
+  pullPolicy: Always
+
+env:
+  dotnetEnvironment: Production
+
+# OKE `gameserver` node pool (Pulumi initial node label workload=gameserver).
+nodeSelector:
+  workload: gameserver
+
+# The gameserver pool is a single Always-Free 1-OCPU / 2 GB node, so the fleet
+# is kept small and the autoscaler is pinned to that one node's capacity.
+fleet:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 250m
+      memory: 512Mi
+
+autoscaler:
+  enabled: true
+  bufferSize: 128
+  minReplicas: 2
+  maxReplicas: 6

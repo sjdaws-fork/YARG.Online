@@ -58,6 +58,12 @@ public class FullFlowE2ETests : IClassFixture<E2EFixture>
 
         await aliceConn.InvokeAsync(nameof(ILobbyHub.StartGame));
 
+        // Starting is broadcast before allocation; GameStarted after.
+        var aliceStarting = await alice.NextStatusChanged();
+        var bobStarting = await bob.NextStatusChanged();
+        Assert.Equal(LobbyStatus.Starting, aliceStarting.Status);
+        Assert.Equal(LobbyStatus.Starting, bobStarting.Status);
+
         var aliceStart = await alice.NextGameStarted();
         var bobStart = await bob.NextGameStarted();
         Assert.Equal(created.Lobby.Id, aliceStart.LobbyId);

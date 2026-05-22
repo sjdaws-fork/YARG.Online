@@ -1,0 +1,87 @@
+apiVersion: skaffold/v4beta11
+kind: Config
+metadata:
+  name: yarg-online
+build:
+  local:
+    push: true
+  tagPolicy:
+    gitCommit: {}
+  insecureRegistries:
+    - registry.chandler-compute-1
+  # Artifact images are bare logical names; the registry is supplied per
+  # kube-context by skaffold's default-repo (see infra/README.md). This keeps
+  # the IMAGE_*_lobbies / IMAGE_*_game template variables short and identical
+  # across the local and oci-prod profiles.
+  artifacts:
+    - image: lobbies
+      context: .
+      docker:
+        dockerfile: src/YARG.Online.Lobbies/Dockerfile
+    - image: game
+      context: .
+      docker:
+        dockerfile: src/YARG.Online.Game/Dockerfile
+manifests:
+  helm:
+    releases:
+      - name: lobbies
+        chartPath: src/YARG.Online.Lobbies/charts
+        namespace: yarg-online-local-lobbies
+        createNamespace: true
+        valuesFiles:
+          - src/YARG.Online.Lobbies/charts/values.local.yaml
+        setValueTemplates:
+          image.repository: '{{.IMAGE_REPO_lobbies}}'
+          image.tag: '{{.IMAGE_TAG_lobbies}}@{{.IMAGE_DIGEST_lobbies}}'
+      - name: game
+        chartPath: src/YARG.Online.Game/charts
+        namespace: yarg-online-local-game
+        createNamespace: true
+        valuesFiles:
+          - src/YARG.Online.Game/charts/values.local.yaml
+        setValueTemplates:
+          image.repository: '{{.IMAGE_REPO_game}}'
+          image.tag: '{{.IMAGE_TAG_game}}@{{.IMAGE_DIGEST_game}}'
+deploy:
+  helm: {}
+
+# OCI/OKE production deployment. Opt in with `skaffold run -p oci-prod`.
+# The OCIR registry is supplied by the oci-prod kube-context's default-repo
+# (see infra/README.md); the only build difference from local is the arm64
+# platform constraint, patched onto the shared artifacts below.
+profiles:
+  - name: oci-prod
+    patches:
+      # OKE node pools are Ampere A1 (arm64); build the images for that arch.
+      - op: add
+        path: /build/artifacts/0/platforms
+        value: [linux/arm64]
+      - op: add
+        path: /build/artifacts/1/platforms
+        value: [linux/arm64]
+    manifests:
+      helm:
+        releases:
+          # game is deployed first: it creates the yarg-online-game namespace, which
+          # the lobbies release needs for its cross-namespace Agones Role/RoleBinding.
+          - name: game
+            chartPath: src/YARG.Online.Game/charts
+            namespace: yarg-online-game
+            createNamespace: true
+            valuesFiles:
+              - src/YARG.Online.Game/charts/values.oci-prod.yaml
+              - src/YARG.Online.Game/charts/values.oci-prod.secrets.yaml
+            setValueTemplates:
+              image.repository: '{{.IMAGE_REPO_game}}'
+              image.tag: '{{.IMAGE_TAG_game}}@{{.IMAGE_DIGEST_game}}'
+          - name: lobbies
+            chartPath: src/YARG.Online.Lobbies/charts
+            namespace: yarg-online-lobbies
+            createNamespace: true
+            valuesFiles:
+              - src/YARG.Online.Lobbies/charts/values.oci-prod.yaml
+              - src/YARG.Online.Lobbies/charts/values.oci-prod.secrets.yaml
+            setValueTemplates:
+              image.repository: '{{.IMAGE_REPO_lobbies}}'
+              image.tag: '{{.IMAGE_TAG_lobbies}}@{{.IMAGE_DIGEST_lobbies}}'

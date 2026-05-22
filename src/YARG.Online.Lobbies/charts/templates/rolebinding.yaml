@@ -1,0 +1,20 @@
+{{- if .Values.agones.enabled }}
+# RoleBinding must be in the same namespace as the Role it references.
+# The ServiceAccount subject lives in the lobbies namespace ({{ .Release.Namespace }}).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-lobbies-allocator
+  namespace: {{ .Values.agones.gameServerNamespace }}
+  labels:
+    app.kubernetes.io/name: yarg-online-lobbies
+    app.kubernetes.io/instance: {{ .Release.Name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Release.Name }}-lobbies-allocator
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-lobbies
+    namespace: {{ .Release.Namespace }}
+{{- end }}

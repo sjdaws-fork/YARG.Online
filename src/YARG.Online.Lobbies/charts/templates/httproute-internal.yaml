@@ -1,0 +1,26 @@
+{{- if .Values.internalGateway.enabled }}
+# Routes the game-server callback endpoints (/api/v1/lobbies/{id}/game-finished
+# and /song-started) through the internal Gateway only. No hostnames -- this is
+# a single-purpose internal route, so it matches any Host header.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ .Values.internalGateway.name }}
+  labels:
+    app.kubernetes.io/name: yarg-online-lobbies
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  annotations:
+    external-dns.alpha.kubernetes.io/controller: "none"
+spec:
+  parentRefs:
+    - name: {{ .Values.internalGateway.name }}
+      namespace: {{ .Values.httpRoute.parentRef.namespace }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/v1/lobbies
+      backendRefs:
+        - name: lobbies
+          port: {{ .Values.service.port }}
+{{- end }}

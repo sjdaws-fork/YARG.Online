@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using YARG.Online.Lobbies.Allocation;
 using YARG.Online.Lobbies.Auth;
 using YARG.Online.Lobbies.Contracts.Enums;
 using YARG.Online.Lobbies.Contracts.Hubs;
@@ -33,7 +34,7 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
     private readonly IGameJwtTokenService _gameJwt;
     private readonly IMapper _mapper;
     private readonly LobbyOptions _options;
-    private readonly string _gameServerEndpoint;
+    private readonly IGameAllocator _allocator;
     private readonly string _gameServerConnectionKey;
     private readonly TimeProvider _clock;
     private readonly ILogger<LobbyHub> _logger;
@@ -53,6 +54,7 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
         IMapper mapper,
         IOptions<LobbyOptions> options,
         IOptions<GameServerOptions> gameServerOptions,
+        IGameAllocator allocator,
         TimeProvider clock,
         ILogger<LobbyHub> logger)
     {
@@ -69,7 +71,7 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
         _gameJwt = gameJwt;
         _mapper = mapper;
         _options = options.Value;
-        _gameServerEndpoint = gameServerOptions.Value.Endpoint;
+        _allocator = allocator;
         _gameServerConnectionKey = gameServerOptions.Value.ConnectionKey;
         _clock = clock;
         _logger = logger;
@@ -532,51 +534,22 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
             throw Hub("not_in_lobby");
         }
 
-        var result = await _repo.StartGameAsync(lobbyId, userId, Context.ConnectionAborted);
+        var begin = await _repo.BeginStartGameAsync(lobbyId, userId, Context.ConnectionAborted);
 
         _logger.LogTrace(
-            "StartGame outcome: ConnectionId={ConnectionId} LobbyId={LobbyId} UserId={UserId} Outcome={Outcome}",
-            Context.ConnectionId, lobbyId, userId, result.Outcome);
+            "StartGame begin outcome: ConnectionId={ConnectionId} LobbyId={LobbyId} UserId={UserId} Outcome={Outcome}",
+            Context.ConnectionId, lobbyId, userId, begin.Outcome);
 
-        switch (result.Outcome)
+        switch (begin.Outcome)
         {
             case StartGameOutcome.Started:
-                // Mint a per-member game JWT and deliver it only to that member's connections.
-                // Each token's `sub` is the recipient — they must never be cross-broadcast.
-                var expectedMembers = result.Members!.Count;
-                var hostUserId = result.Lobby!.HostUserId;
-                var tokensIssued = 0;
-                var dispatches = 0;
-                foreach (var member in result.Members!)
-                {
-                    var isHost = member.UserId == hostUserId;
-                    var issued = _gameJwt.IssueGameToken(member.UserId, member.DisplayName, lobbyId, expectedMembers, isHost);
-                    tokensIssued++;
-                    foreach (var connId in _connections.GetConnectionsForUser(member.UserId))
-                    {
-                        await Clients.Client(connId)
-                            .OnGameStarted(new GameStartedEvent(
-                                lobbyId,
-                                _gameServerEndpoint,
-                                _gameServerConnectionKey,
-                                issued.Token,
-                                issued.ExpiresAt));
-                        dispatches++;
-                    }
-                }
-
-                _logger.LogTrace(
-                    "StartGame dispatched game tokens: LobbyId={LobbyId} ExpectedMembers={ExpectedMembers} TokensIssued={TokensIssued} Dispatches={Dispatches}",
-                    lobbyId, expectedMembers, tokensIssued, dispatches);
-
-                await Clients.Group(LobbyGroup(lobbyId))
-                    .OnLobbyStatusChanged(new LobbyStatusChangedEvent(lobbyId, LobbyStatus.GameStarted));
-                _buffer.Enqueue(new LobbyChange(lobbyId, LobbyChangeKind.Updated, _mapper.Map<LobbyDto>(result.Lobby!)));
-                return;
+                break;
             case StartGameOutcome.NotFound:
                 throw Hub("not_in_lobby");
             case StartGameOutcome.NotHost:
                 throw Hub("not_host");
+            case StartGameOutcome.AlreadyStarting:
+                throw Hub("already_starting");
             case StartGameOutcome.AlreadyStarted:
                 throw Hub("already_started");
             case StartGameOutcome.NotEnoughPlayers:
@@ -584,8 +557,82 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
             case StartGameOutcome.QueueEmpty:
                 throw Hub("queue_empty");
             default:
-                throw new InvalidOperationException($"Unexpected start outcome {result.Outcome}.");
+                throw new InvalidOperationException($"Unexpected start outcome {begin.Outcome}.");
         }
+
+        // Broadcast the intermediate Starting state so clients can render a "preparing" UI
+        // while we wait on the allocator. On allocation failure we roll back below.
+        await Clients.Group(LobbyGroup(lobbyId))
+            .OnLobbyStatusChanged(new LobbyStatusChangedEvent(lobbyId, LobbyStatus.Starting));
+        _buffer.Enqueue(new LobbyChange(lobbyId, LobbyChangeKind.Updated, _mapper.Map<LobbyDto>(begin.Lobby!)));
+
+        var expectedMembers = begin.Members!.Count;
+        GameAllocation allocation;
+        try
+        {
+            allocation = await _allocator.AllocateAsync(expectedMembers, Context.ConnectionAborted);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Allocation failed; rolling back StartGame: LobbyId={LobbyId} UserId={UserId} ExpectedMembers={ExpectedMembers}",
+                lobbyId, userId, expectedMembers);
+
+            // Use CancellationToken.None for rollback so we don't leave the lobby stuck in Starting
+            // if the original request was cancelled.
+            await _repo.AbortStartGameAsync(lobbyId, CancellationToken.None);
+
+            var current = await _repo.GetAsync(lobbyId, CancellationToken.None);
+            await Clients.Group(LobbyGroup(lobbyId))
+                .OnLobbyStatusChanged(new LobbyStatusChangedEvent(lobbyId, LobbyStatus.SongSelect));
+            if (current is not null)
+            {
+                _buffer.Enqueue(new LobbyChange(lobbyId, LobbyChangeKind.Updated, _mapper.Map<LobbyDto>(current)));
+            }
+
+            throw Hub("allocation_failed");
+        }
+
+        var confirm = await _repo.ConfirmStartGameAsync(lobbyId, allocation, Context.ConnectionAborted);
+        if (confirm.Outcome != ConfirmStartGameOutcome.Started)
+        {
+            _logger.LogWarning(
+                "StartGame confirm failed; rolling back: LobbyId={LobbyId} Outcome={Outcome}",
+                lobbyId, confirm.Outcome);
+            await _repo.AbortStartGameAsync(lobbyId, CancellationToken.None);
+            throw Hub("start_aborted");
+        }
+
+        // Mint a per-member game JWT and deliver it only to that member's connections.
+        // Each token's `sub` is the recipient — they must never be cross-broadcast.
+        var hostUserId = confirm.Lobby!.HostUserId;
+        var tokensIssued = 0;
+        var dispatches = 0;
+        foreach (var member in begin.Members!)
+        {
+            var isHost = member.UserId == hostUserId;
+            var issued = _gameJwt.IssueGameToken(member.UserId, member.DisplayName, lobbyId, expectedMembers, isHost);
+            tokensIssued++;
+            foreach (var connId in _connections.GetConnectionsForUser(member.UserId))
+            {
+                await Clients.Client(connId)
+                    .OnGameStarted(new GameStartedEvent(
+                        lobbyId,
+                        allocation.Endpoint,
+                        _gameServerConnectionKey,
+                        issued.Token,
+                        issued.ExpiresAt));
+                dispatches++;
+            }
+        }
+
+        _logger.LogTrace(
+            "StartGame dispatched game tokens: LobbyId={LobbyId} ExpectedMembers={ExpectedMembers} TokensIssued={TokensIssued} Dispatches={Dispatches} Endpoint={Endpoint} GameServer={GameServer}",
+            lobbyId, expectedMembers, tokensIssued, dispatches, allocation.Endpoint, allocation.GameServerName);
+
+        await Clients.Group(LobbyGroup(lobbyId))
+            .OnLobbyStatusChanged(new LobbyStatusChangedEvent(lobbyId, LobbyStatus.GameStarted));
+        _buffer.Enqueue(new LobbyChange(lobbyId, LobbyChangeKind.Updated, _mapper.Map<LobbyDto>(confirm.Lobby!)));
     }
 
     /// <summary>

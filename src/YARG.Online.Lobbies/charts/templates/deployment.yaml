@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lobbies
+  labels:
+    app.kubernetes.io/name: yarg-online-lobbies
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: yarg-online-lobbies
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: yarg-online-lobbies
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      {{- if .Values.agones.enabled }}
+      serviceAccountName: {{ .Release.Name }}-lobbies
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: lobbies
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+          env:
+            - name: ASPNETCORE_ENVIRONMENT
+              value: {{ .Values.env.aspNetCoreEnvironment | default "Development" }}
+            - name: ASPNETCORE_URLS
+              value: "http://+:{{ .Values.service.port }}"
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- if .Values.agones.enabled }}
+            - name: Agones__Namespace
+              value: {{ .Values.agones.gameServerNamespace | quote }}
+            - name: Agones__FleetName
+              value: {{ .Values.agones.fleetName | quote }}
+            - name: Agones__SlotsKey
+              value: {{ .Values.agones.slotsKey | quote }}
+            {{- end }}
+          envFrom:
+            - secretRef:
+                name: yarg-online-lobbies-secrets
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5

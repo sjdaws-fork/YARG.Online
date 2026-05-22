@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Microsoft.Extensions.Options;
+using YARG.Online.Lobbies.Allocation;
 using YARG.Online.Lobbies.Contracts.Enums;
 using YARG.Online.Lobbies.Contracts.Hubs;
 using YARG.Online.Lobbies.Domain;
@@ -25,6 +26,8 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
         public long NextChatSequence = 1;
         public readonly List<QueuedSong> SongQueue = new();
         public long NextQueueSequence = 1;
+        // Allocation stamped by ConfirmStartGameAsync; consumed and cleared by FinishGameAsync.
+        public GameAllocation? CurrentAllocation;
         public readonly object Lock = new();
     }
 
@@ -526,38 +529,45 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
         }
     }
 
-    public Task<StartGameResultData> StartGameAsync(string lobbyId, string callerUserId, CancellationToken ct)
+    public Task<BeginStartGameResultData> BeginStartGameAsync(string lobbyId, string callerUserId, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
 
         if (!_entries.TryGetValue(lobbyId, out var entry))
         {
-            return Task.FromResult(new StartGameResultData(StartGameOutcome.NotFound, null, null));
+            return Task.FromResult(new BeginStartGameResultData(StartGameOutcome.NotFound, null, null));
         }
 
         lock (entry.Lock)
         {
             if (entry.Lobby.HostUserId != callerUserId)
             {
-                return Task.FromResult(new StartGameResultData(StartGameOutcome.NotHost, null, null));
+                return Task.FromResult(new BeginStartGameResultData(StartGameOutcome.NotHost, null, null));
             }
 
-            if (entry.Lobby.Status != LobbyStatus.SongSelect)
+            switch (entry.Lobby.Status)
             {
-                return Task.FromResult(new StartGameResultData(StartGameOutcome.AlreadyStarted, null, null));
+                case LobbyStatus.Starting:
+                    return Task.FromResult(new BeginStartGameResultData(StartGameOutcome.AlreadyStarting, null, null));
+                case LobbyStatus.GameStarted:
+                    return Task.FromResult(new BeginStartGameResultData(StartGameOutcome.AlreadyStarted, null, null));
+                case LobbyStatus.SongSelect:
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unexpected lobby status {entry.Lobby.Status}.");
             }
 
             if (entry.Members.Count < 2)
             {
-                return Task.FromResult(new StartGameResultData(StartGameOutcome.NotEnoughPlayers, null, null));
+                return Task.FromResult(new BeginStartGameResultData(StartGameOutcome.NotEnoughPlayers, null, null));
             }
 
             if (entry.SongQueue.Count == 0)
             {
-                return Task.FromResult(new StartGameResultData(StartGameOutcome.QueueEmpty, null, null));
+                return Task.FromResult(new BeginStartGameResultData(StartGameOutcome.QueueEmpty, null, null));
             }
 
-            entry.Lobby = entry.Lobby with { Status = LobbyStatus.GameStarted };
+            entry.Lobby = entry.Lobby with { Status = LobbyStatus.Starting };
 
             var members = new List<StartGameMember>(entry.JoinOrder.Count);
             foreach (var userId in entry.JoinOrder)
@@ -566,8 +576,51 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
                 members.Add(new StartGameMember(userId, name));
             }
 
-            return Task.FromResult(new StartGameResultData(StartGameOutcome.Started, entry.Lobby, members));
+            return Task.FromResult(new BeginStartGameResultData(StartGameOutcome.Started, entry.Lobby, members));
         }
+    }
+
+    public Task<ConfirmStartGameResultData> ConfirmStartGameAsync(string lobbyId, GameAllocation allocation, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        if (!_entries.TryGetValue(lobbyId, out var entry))
+        {
+            return Task.FromResult(new ConfirmStartGameResultData(ConfirmStartGameOutcome.NotFound, null));
+        }
+
+        lock (entry.Lock)
+        {
+            if (entry.Lobby.Status != LobbyStatus.Starting)
+            {
+                return Task.FromResult(new ConfirmStartGameResultData(ConfirmStartGameOutcome.NotStarting, null));
+            }
+
+            entry.CurrentAllocation = allocation;
+            entry.Lobby = entry.Lobby with { Status = LobbyStatus.GameStarted };
+            return Task.FromResult(new ConfirmStartGameResultData(ConfirmStartGameOutcome.Started, entry.Lobby));
+        }
+    }
+
+    public Task AbortStartGameAsync(string lobbyId, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        if (!_entries.TryGetValue(lobbyId, out var entry))
+        {
+            return Task.CompletedTask;
+        }
+
+        lock (entry.Lock)
+        {
+            if (entry.Lobby.Status != LobbyStatus.Starting)
+            {
+                return Task.CompletedTask;
+            }
+
+            entry.Lobby = entry.Lobby with { Status = LobbyStatus.SongSelect };
+        }
+        return Task.CompletedTask;
     }
 
     public Task<FinishGameResultData> FinishGameAsync(string lobbyId, CancellationToken ct)
@@ -576,14 +629,14 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
 
         if (!_entries.TryGetValue(lobbyId, out var entry))
         {
-            return Task.FromResult(new FinishGameResultData(FinishGameOutcome.NotFound, null, null));
+            return Task.FromResult(new FinishGameResultData(FinishGameOutcome.NotFound, null, null, null));
         }
 
         lock (entry.Lock)
         {
             if (entry.Lobby.Status != LobbyStatus.GameStarted)
             {
-                return Task.FromResult(new FinishGameResultData(FinishGameOutcome.NotStarted, null, null));
+                return Task.FromResult(new FinishGameResultData(FinishGameOutcome.NotStarted, null, null, null));
             }
 
             // The song that was just played is by construction at the head of the queue (StartGame
@@ -598,13 +651,16 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
                 entry.SongQueue.RemoveAt(0);
             }
 
+            var allocation = entry.CurrentAllocation;
+            entry.CurrentAllocation = null;
+
             entry.Lobby = entry.Lobby with
             {
                 Status = LobbyStatus.SongSelect,
                 SongStartedAt = null,
                 SongDurationMs = null,
             };
-            return Task.FromResult(new FinishGameResultData(FinishGameOutcome.Finished, entry.Lobby, played));
+            return Task.FromResult(new FinishGameResultData(FinishGameOutcome.Finished, entry.Lobby, played, allocation));
         }
     }
 

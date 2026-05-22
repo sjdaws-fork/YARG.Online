@@ -30,3 +30,15 @@ tools/package-lock.json
 .DS_Store
 Thumbs.db
 *.meta
+
+# Pulumi configs
+infra/Pulumi.local.yaml
+infra/Pulumi.oci-prod.yaml
+
+# Helm local values (dev secrets)
+src/YARG.Online.Lobbies/charts/values.local.yaml
+src/YARG.Online.Game/charts/values.local.yaml
+
+# Helm oci-prod values (production secrets)
+src/YARG.Online.Lobbies/charts/values.oci-prod.secrets.yaml
+src/YARG.Online.Game/charts/values.oci-prod.secrets.yaml

@@ -3,12 +3,14 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 using FluentValidation;
+using k8s;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using YARG.Online.Lobbies.Contracts.Hubs;
+using YARG.Online.Lobbies.Allocation;
 using YARG.Online.Lobbies.Auth;
 using YARG.Online.Lobbies.Endpoints;
 using YARG.Online.Lobbies.Hubs;
@@ -48,12 +50,43 @@ builder.Services.AddOptions<GameAuthOptions>()
 builder.Services.AddOptions<LobbyOptions>()
     .Bind(builder.Configuration.GetSection(LobbyOptions.SectionName));
 
-builder.Services.AddOptions<GameServerOptions>()
-    .Bind(builder.Configuration.GetSection(GameServerOptions.SectionName))
-    .Validate(o => !string.IsNullOrWhiteSpace(o.Endpoint), "GameServer:Endpoint is required.")
-    .Validate(o => string.IsNullOrEmpty(o.Endpoint) || o.Endpoint.Contains(':'),
-        "GameServer:Endpoint must be in 'host:port' form.")
-    .ValidateOnStart();
+// In-cluster lobby pods talk to Agones for capacity-aware allocation; out-of-cluster
+// (local dev) just reuses a static endpoint. The ConnectionKey lives in lobby config
+// in both cases — the allocator is only responsible for the endpoint.
+if (KubernetesClientConfiguration.IsInCluster())
+{
+    builder.Services.AddOptions<AgonesOptions>()
+        .Bind(builder.Configuration.GetSection(AgonesOptions.SectionName))
+        .Validate(o => !string.IsNullOrWhiteSpace(o.Namespace), "Agones:Namespace is required.")
+        .Validate(o => !string.IsNullOrWhiteSpace(o.FleetName), "Agones:FleetName is required.")
+        .Validate(o => !string.IsNullOrWhiteSpace(o.SlotsKey), "Agones:SlotsKey is required.")
+        .ValidateOnStart();
+
+    builder.Services.AddOptions<GameServerOptions>()
+        .Bind(builder.Configuration.GetSection(GameServerOptions.SectionName))
+        .Validate(o => !string.IsNullOrWhiteSpace(o.ConnectionKey), "GameServer:ConnectionKey is required.")
+        .ValidateOnStart();
+
+    builder.Services.AddSingleton<IKubernetes>(_ =>
+        new Kubernetes(KubernetesClientConfiguration.InClusterConfig()));
+    builder.Services.AddSingleton<IGameAllocator, AgonesGameAllocator>();
+    builder.Services.AddSingleton<IGameEndedHandler, AgonesGameEndedHandler>();
+}
+else
+{
+    builder.Services.AddOptions<GameServerOptions>()
+        .Bind(builder.Configuration.GetSection(GameServerOptions.SectionName))
+        .Validate(o => !string.IsNullOrWhiteSpace(o.Endpoint), "GameServer:Endpoint is required.")
+        .Validate(o => string.IsNullOrEmpty(o.Endpoint) || o.Endpoint.Contains(':'),
+            "GameServer:Endpoint must be in 'host:port' form.")
+        .Validate(o => !string.IsNullOrWhiteSpace(o.ConnectionKey), "GameServer:ConnectionKey is required.")
+        .ValidateOnStart();
+
+    builder.Services.AddSingleton<IGameAllocator, StaticGameAllocator>();
+    builder.Services.AddSingleton<IGameEndedHandler, NoOpGameEndedHandler>();
+}
+
+builder.Services.AddHealthChecks();
 
 builder.Services.AddSingleton<JwtTokenService>();
 builder.Services.AddSingleton<IJwtTokenService>(sp => sp.GetRequiredService<JwtTokenService>());
@@ -196,6 +229,10 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapOpenApi("/openapi/v1.json");
+
+// Probes — these stay anonymous so kubelet can reach them without a JWT.
+app.MapHealthChecks("/healthz").AllowAnonymous();
+app.MapHealthChecks("/readyz").AllowAnonymous();
 
 app.MapAuthEndpoints(app.Environment);
 app.MapGameLifecycleEndpoints();

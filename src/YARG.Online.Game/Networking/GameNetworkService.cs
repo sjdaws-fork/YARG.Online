@@ -3,6 +3,7 @@ using LiteNetLib.Utils;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using YARG.Online.Game.Agones;
 using YARG.Online.Game.Auth;
 using YARG.Online.Game.Contracts.Packets;
 using YARG.Online.Game.Lobbies;
@@ -29,6 +30,7 @@ public sealed class GameNetworkService : BackgroundService
     private readonly AuthenticatedPeerRegistry _registry;
     private readonly GameSessionManager _sessions;
     private readonly ILobbiesClient _lobbies;
+    private readonly AgonesReadinessSignal _readiness;
     private readonly ILogger<GameNetworkService> _logger;
     private NetManager? _manager;
 
@@ -38,6 +40,7 @@ public sealed class GameNetworkService : BackgroundService
         AuthenticatedPeerRegistry registry,
         GameSessionManager sessions,
         ILobbiesClient lobbies,
+        AgonesReadinessSignal readiness,
         ILogger<GameNetworkService> logger)
     {
         _options = options.Value;
@@ -45,6 +48,7 @@ public sealed class GameNetworkService : BackgroundService
         _registry = registry;
         _sessions = sessions;
         _lobbies = lobbies;
+        _readiness = readiness;
         _logger = logger;
     }
 
@@ -68,6 +72,10 @@ public sealed class GameNetworkService : BackgroundService
         _logger.LogInformation(
             "GameNetworkService listening on UDP port {Port} (max {MaxConnections} peers).",
             _manager.LocalPort, _options.MaxConnections);
+
+        // Signals AgonesReadyService (if registered) that the socket is bound and the
+        // pod is eligible to be marked Ready. No-op when Agones isn't wired in.
+        _readiness.Set();
 
         try
         {

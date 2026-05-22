@@ -1,0 +1,11 @@
+# Copy to values.local.yaml (gitignored) and fill in the dev secrets.
+# Values mirror those in docker-compose.yml for the lobbies service.
+secrets:
+  Auth__Issuer: yarg-online-dev
+  Auth__Audience: yarg-online-dev
+  Auth__SigningSecret: dev-only-do-not-use-in-prod-please-change-me-32b+
+  GameAuth__Issuer: yarg-online-game-dev
+  GameAuth__Audience: yarg-online-game-dev
+  GameAuth__SigningSecret: dev-only-game-secret-do-not-use-in-prod-32b+++
+  GameServer__Endpoint: localhost:9050
+  GameServer__ConnectionKey: yarg-online-game-dev

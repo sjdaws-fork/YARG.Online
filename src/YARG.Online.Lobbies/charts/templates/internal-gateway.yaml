@@ -1,0 +1,57 @@
+{{- if .Values.internalGateway.enabled }}
+# A dedicated, cluster-internal Gateway for the game-server callback endpoints.
+# Its Envoy Service is ClusterIP, so -- unlike the NLB-backed `main` Gateway --
+# it is never reachable from the internet. It lives in the Envoy Gateway system
+# namespace alongside `main` (Role/RoleBinding already set the precedent for the
+# lobbies chart creating resources outside its release namespace).
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: {{ .Values.internalGateway.name }}
+  namespace: {{ .Values.httpRoute.parentRef.namespace }}
+  labels:
+    app.kubernetes.io/name: yarg-online-lobbies
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      # ClusterIP keeps the Gateway off the internet; the pinned name gives the
+      # game server a stable Service DNS record to point Lobbies__BaseUrl at.
+      envoyService:
+        type: ClusterIP
+        name: {{ .Values.internalGateway.serviceName }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ .Values.internalGateway.name }}
+  namespace: {{ .Values.httpRoute.parentRef.namespace }}
+  labels:
+    app.kubernetes.io/name: yarg-online-lobbies
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  annotations:
+    # external-dns publishes records from HTTPRoute hostnames; this Gateway has
+    # no public address and its route has no hostname, but exclude it explicitly.
+    external-dns.alpha.kubernetes.io/controller: "none"
+spec:
+  gatewayClassName: {{ .Values.internalGateway.gatewayClassName }}
+  # Per-Gateway EnvoyProxy override -- takes precedence over any EnvoyProxy
+  # attached to the GatewayClass (e.g. the NLB config on the OCI stack).
+  infrastructure:
+    parametersRef:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: {{ .Values.internalGateway.name }}
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      # Only the lobbies release namespace may attach routes to this Gateway.
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+{{- end }}

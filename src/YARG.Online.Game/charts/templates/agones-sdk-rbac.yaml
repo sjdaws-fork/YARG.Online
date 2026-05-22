@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agones-sdk
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: yarg-online-game
+    app.kubernetes.io/instance: {{ .Release.Name }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agones-sdk-access
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: yarg-online-game
+    app.kubernetes.io/instance: {{ .Release.Name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: agones-sdk
+subjects:
+  - kind: ServiceAccount
+    name: agones-sdk
+    namespace: {{ .Release.Namespace }}

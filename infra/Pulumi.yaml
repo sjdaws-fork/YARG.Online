@@ -1,0 +1,3 @@
+name: yarg-online
+runtime: dotnet
+description: YARG.Online cluster bootstrap — local k3s or an OCI/OKE cluster, Gateway API, Envoy Gateway, and Agones

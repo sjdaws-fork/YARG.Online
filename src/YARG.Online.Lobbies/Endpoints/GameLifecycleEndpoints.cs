@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.SignalR;
+using YARG.Online.Lobbies.Allocation;
 using YARG.Online.Lobbies.Contracts.Enums;
 using YARG.Online.Lobbies.Contracts.Hubs;
 using YARG.Online.Lobbies.Contracts.Rest;
@@ -45,6 +46,8 @@ public static class GameLifecycleEndpoints
         IHubContext<LobbyHub, ILobbyHubClient> hub,
         IMapper mapper,
         ILobbyChangeBuffer buffer,
+        IGameEndedHandler gameEndedHandler,
+        ILogger<LobbyHub> logger,
         CancellationToken ct)
     {
         var result = await repo.FinishGameAsync(lobbyId, ct);
@@ -60,6 +63,24 @@ public static class GameLifecycleEndpoints
                             lobbyId, played.Sequence, SongRemovalReason.Played));
                 }
                 buffer.Enqueue(new LobbyChange(lobbyId, LobbyChangeKind.Updated, mapper.Map<LobbyDto>(result.Lobby!)));
+
+                if (result.Allocation is { } allocation)
+                {
+                    // Slot release is best-effort — the song is over either way, and the
+                    // FleetAutoscaler / lobby idle cleanup are tolerant of stuck slot values.
+                    try
+                    {
+                        await gameEndedHandler.OnGameEndedAsync(
+                            new GameEndedContext(lobbyId, allocation.GameServerName, allocation.SlotCount), ct);
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogError(ex,
+                            "IGameEndedHandler failed for LobbyId={LobbyId} GameServer={GameServer}",
+                            lobbyId, allocation.GameServerName);
+                    }
+                }
+
                 return TypedResults.NoContent();
             case FinishGameOutcome.NotFound:
                 return TypedResults.Problem(statusCode: StatusCodes.Status404NotFound, title: "lobby_not_found");

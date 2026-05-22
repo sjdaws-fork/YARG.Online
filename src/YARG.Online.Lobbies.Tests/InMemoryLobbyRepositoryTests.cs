@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Options;
 using Xunit;
+using YARG.Online.Lobbies.Allocation;
 using YARG.Online.Lobbies.Contracts.Enums;
 using YARG.Online.Lobbies.Contracts.Hubs;
 using YARG.Online.Lobbies.Domain;
@@ -13,6 +14,17 @@ public class InMemoryLobbyRepositoryTests
 
     private static InMemoryLobbyRepository NewRepo(int maxChatHistorySize = 100) =>
         new(Options.Create(new LobbyOptions { MaxChatHistorySize = maxChatHistorySize }));
+
+    // Two-step StartGame helper for tests that don't care about the intermediate Starting
+    // state or about exercising allocator failures — synthesizes a placeholder allocation.
+    private static async Task<BeginStartGameResultData> StartGameAsync(InMemoryLobbyRepository repo, string lobbyId, string callerUserId)
+    {
+        var begin = await repo.BeginStartGameAsync(lobbyId, callerUserId, default);
+        if (begin.Outcome != StartGameOutcome.Started) return begin;
+        var allocation = new GameAllocation("test:0", GameServerName: null, SlotCount: begin.Members!.Count);
+        await repo.ConfirmStartGameAsync(lobbyId, allocation, default);
+        return begin;
+    }
 
     private static Lobby NewLobby(string id = "AAAAAAAA", string hostId = "host", int maxPlayers = 4) => new(
         Id: id,
@@ -717,7 +729,7 @@ public class InMemoryLobbyRepositoryTests
         var first = await repo.EnqueueSongAsync("AAAAAAAA", "host", "h1", DateTimeOffset.UtcNow, default);
         var second = await repo.EnqueueSongAsync("AAAAAAAA", "host", "h2", DateTimeOffset.UtcNow, default);
 
-        await repo.StartGameAsync("AAAAAAAA", "host", default);
+        await StartGameAsync(repo, "AAAAAAAA", "host");
         await repo.SongStartedAsync("AAAAAAAA", DateTimeOffset.UtcNow, durationMs: 215_000, default);
 
         var finish = await repo.FinishGameAsync("AAAAAAAA", default);
@@ -746,7 +758,7 @@ public class InMemoryLobbyRepositoryTests
         await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, default);
         await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1" }, default);
         await repo.EnqueueSongAsync("AAAAAAAA", "host", "h1", DateTimeOffset.UtcNow, default);
-        await repo.StartGameAsync("AAAAAAAA", "host", default);
+        await StartGameAsync(repo, "AAAAAAAA", "host");
 
         // Simulate the queue having been drained mid-game (e.g. requester left and their entry
         // was purged by RemoveMemberLocked) by leaving the only-other-member.
@@ -758,7 +770,7 @@ public class InMemoryLobbyRepositoryTests
         await repo2.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, default);
         await repo2.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1" }, default);
         var added = await repo2.EnqueueSongAsync("AAAAAAAA", "host", "h1", DateTimeOffset.UtcNow, default);
-        await repo2.StartGameAsync("AAAAAAAA", "host", default);
+        await StartGameAsync(repo2, "AAAAAAAA", "host");
         // Drain the queue manually via a host removal.
         await repo2.RemoveQueuedSongAsync("AAAAAAAA", "host", added.Entry!.Sequence, default);
 
@@ -775,7 +787,7 @@ public class InMemoryLobbyRepositoryTests
         await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, default);
         await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1" }, default);
         await repo.EnqueueSongAsync("AAAAAAAA", "host", "h1", DateTimeOffset.UtcNow, default);
-        await repo.StartGameAsync("AAAAAAAA", "host", default);
+        await StartGameAsync(repo, "AAAAAAAA", "host");
 
         var startedAt = new DateTimeOffset(2026, 5, 15, 12, 0, 0, TimeSpan.Zero);
         var result = await repo.SongStartedAsync("AAAAAAAA", startedAt, durationMs: 180_000, default);

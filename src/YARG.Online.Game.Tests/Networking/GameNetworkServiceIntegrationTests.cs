@@ -7,6 +7,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Xunit;
+using YARG.Online.Game.Agones;
 using YARG.Online.Game.Auth;
 using YARG.Online.Game.Contracts.Enums;
 using YARG.Online.Game.Contracts.Packets;
@@ -66,6 +67,7 @@ public class GameNetworkServiceIntegrationTests : IAsyncLifetime
         builder.Services.AddSingleton<IGameJwtValidator, GameJwtValidator>();
         builder.Services.AddSingleton<AuthenticatedPeerRegistry>();
         builder.Services.AddSingleton<GameSessionManager>();
+        builder.Services.AddSingleton<AgonesReadinessSignal>();
         builder.Services.AddSingleton<RecordingLobbiesClient>();
         builder.Services.AddSingleton<ILobbiesClient>(sp => sp.GetRequiredService<RecordingLobbiesClient>());
         builder.Services.AddHostedService<GameNetworkService>();

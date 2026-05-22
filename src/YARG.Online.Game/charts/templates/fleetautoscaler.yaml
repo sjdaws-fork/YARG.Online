@@ -1,0 +1,18 @@
+{{- if .Values.autoscaler.enabled }}
+apiVersion: autoscaling.agones.dev/v1
+kind: FleetAutoscaler
+metadata:
+  name: {{ .Values.fleet.name }}-autoscaler
+  labels:
+    app.kubernetes.io/name: yarg-online-game
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  fleetName: {{ .Values.fleet.name }}
+  policy:
+    type: List
+    list:
+      key: slots
+      bufferSize: {{ .Values.autoscaler.bufferSize }}
+      minCapacity: {{ mul .Values.autoscaler.minReplicas .Values.fleet.slotsCapacity }}
+      maxCapacity: {{ mul .Values.autoscaler.maxReplicas .Values.fleet.slotsCapacity }}
+{{- end }}

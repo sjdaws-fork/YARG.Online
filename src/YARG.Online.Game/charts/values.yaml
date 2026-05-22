@@ -1,0 +1,51 @@
+image:
+  repository: registry.chandler-compute-1/yarg-online-game
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# .NET environment. Defaults to Development; oci-prod overrides to Production.
+env:
+  dotnetEnvironment: Development
+
+# Pins game pods to a node pool by label. Empty on local (k3s); oci-prod sets
+# workload=gameserver to land on the OKE `gameserver` pool.
+nodeSelector: {}
+
+# Fleet sizing. minReplicas keeps warm capacity; bufferSize tells the
+# FleetAutoscaler how many free slots to maintain across the fleet.
+fleet:
+  name: game-fleet
+  replicas: 2
+  slotsCapacity: 256
+  containerPort: 9050
+  protocol: UDP
+  portPolicy: Dynamic
+  health:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    failureThreshold: 3
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+autoscaler:
+  enabled: true
+  bufferSize: 20
+  minReplicas: 2
+  maxReplicas: 10
+
+# Retirement strategy: pods stay Allocated indefinitely after match end.
+# kubectl get gs will show drained Allocated pods accumulating until the next
+# image rollout drains them via rolling-update churn. This is intentional —
+# do not "fix" it by adding SDK.Shutdown() or a delete-on-empty path.
+
+# Populated by values.local.yaml (gitignored). Each key/value is rendered into
+# a Secret consumed by the game container via envFrom. The keys must match the
+# lobby's GameAuth__* values and Network__ConnectionKey must equal the lobby's
+# GameServer__ConnectionKey — JWT validation and the LiteNetLib handshake key
+# both fail silently on mismatch.
+secrets: {}

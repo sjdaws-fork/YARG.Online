@@ -1,0 +1,59 @@
+{{- if .Values.networkPolicy.enabled }}
+# Lobbies pod ingress: HTTP may only arrive from an Envoy Gateway (both `main`
+# and the internal Gateway live in the Envoy Gateway system namespace). This
+# stops any other pod from reaching lobbies:5230 directly and bypassing the
+# Gateway path filtering. Egress is unrestricted, so the pod can still call the
+# Kubernetes API for Agones allocation. Kubelet liveness/readiness probes hit
+# the pod IP from the node host and are permitted by the NetworkPolicy
+# controller, so /healthz and /readyz keep working.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lobbies-ingress
+  labels:
+    app.kubernetes.io/name: yarg-online-lobbies
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: yarg-online-lobbies
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.httpRoute.parentRef.namespace }}
+      ports:
+        - port: {{ .Values.service.port }}
+          protocol: TCP
+---
+# Internal Gateway ingress: only Agones game-server pods may open connections to
+# the internal Gateway's Envoy pods. This is the "only callable by game servers"
+# control for the /api/v1/lobbies callback endpoints.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lobbies-internal-gateway-ingress
+  namespace: {{ .Values.httpRoute.parentRef.namespace }}
+  labels:
+    app.kubernetes.io/name: yarg-online-lobbies
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  podSelector:
+    matchLabels:
+      gateway.envoyproxy.io/owning-gateway-name: {{ .Values.internalGateway.name }}
+  policyTypes:
+    - Ingress
+  ingress:
+    # namespaceSelector + podSelector in one rule is an AND: game-server pods in
+    # the game namespace only.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.gameServerNamespace }}
+          podSelector:
+            matchLabels:
+              agones.dev/role: gameserver
+{{- end }}

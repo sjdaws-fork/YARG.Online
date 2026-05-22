@@ -1,14 +1,26 @@
+# Whitelist build context. Docker builds use `.` as context and the Dockerfiles
+# do `COPY . .`, so ANY file present here busts the publish layer's cache and
+# forces a rebuild. Exclude everything, then re-include only what
+# `dotnet restore` / `dotnet publish` actually need.
+*
+
+# .NET build inputs
+!global.json
+!src/
+
+# Re-exclude build output / IDE noise inside src/
 **/bin/
 **/obj/
+**/bin~/
+**/obj~/
 **/.vs/
-.git/
-.idea/
-.vscode/
-.claude/
-test-assets/
+
+# Not needed to build the images
+src/**/charts/
+src/**/Dockerfile
 src/YARG.Online.Game.Contracts - Copy/
-**/Dockerfile
-.dockerignore
-docker-compose.yml
-README.md
-*.md
+
+# Test projects: keep each .csproj (restore stage COPYs them) but drop the
+# source so editing tests does not rebuild the production images.
+src/**/*Tests/
+!src/**/*Tests/*.csproj
