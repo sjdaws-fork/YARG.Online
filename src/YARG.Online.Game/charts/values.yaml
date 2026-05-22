@@ -38,6 +38,11 @@ autoscaler:
   minReplicas: 2
   maxReplicas: 10
 
+# Internal-only Gateway for the lobbies game-server callbacks (ClusterIP Envoy,
+# restricted to game-server pods by NetworkPolicy). Port 80, not the pod's 5230.
+lobbies:
+  baseUrl: http://lobbies-internal-gateway.yarg-online-envoy-gateway-system.svc.cluster.local/
+
 # Retirement strategy: pods stay Allocated indefinitely after match end.
 # kubectl get gs will show drained Allocated pods accumulating until the next
 # image rollout drains them via rolling-update churn. This is intentional —

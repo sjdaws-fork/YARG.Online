@@ -40,6 +40,8 @@ spec:
                   value: {{ .Values.env.dotnetEnvironment | default "Development" }}
                 - name: Agones__Enabled
                   value: "true"
+                - name: Lobbies__BaseUrl
+                  value: {{ .Values.lobbies.baseUrl | quote }}
                 - name: Network__MaxConnections
                   value: "{{ .Values.fleet.slotsCapacity }}"
                 - name: POD_NAMESPACE
