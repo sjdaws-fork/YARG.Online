@@ -21,7 +21,7 @@ public class InMemoryLobbyRepositoryTests
     {
         var begin = await repo.BeginStartGameAsync(lobbyId, callerUserId, default);
         if (begin.Outcome != StartGameOutcome.Started) return begin;
-        var allocation = new GameAllocation("test:0", GameServerName: null, SlotCount: begin.Members!.Count);
+        var allocation = new GameAllocation("test:0", GameServerName: null, SlotCount: begin.MemberCount);
         await repo.ConfirmStartGameAsync(lobbyId, allocation, default);
         return begin;
     }
@@ -45,21 +45,21 @@ public class InMemoryLobbyRepositoryTests
         var repo = NewRepo();
         var lobby = NewLobby();
 
-        Assert.True(await repo.CreateAsync(lobby, EmptyLib, default));
-        Assert.False(await repo.CreateAsync(lobby, EmptyLib, default));
+        Assert.True(await repo.CreateAsync(lobby, EmptyLib, 0, default));
+        Assert.False(await repo.CreateAsync(lobby, EmptyLib, 0, default));
     }
 
     [Fact]
     public async Task JoinAsync_joined_then_already_member()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(), EmptyLib, default);
+        await repo.CreateAsync(NewLobby(), EmptyLib, 0, default);
 
-        var first = await repo.JoinAsync("AAAAAAAA", "player-1", "player-1", EmptyLib, default);
+        var first = await repo.JoinAsync("AAAAAAAA", "player-1", "player-1", EmptyLib, 0, default);
         Assert.Equal(JoinResult.Joined, first.Result);
         Assert.Equal(2, first.Lobby!.PlayerCount);
 
-        var second = await repo.JoinAsync("AAAAAAAA", "player-1", "player-1", EmptyLib, default);
+        var second = await repo.JoinAsync("AAAAAAAA", "player-1", "player-1", EmptyLib, 0, default);
         Assert.Equal(JoinResult.AlreadyMember, second.Result);
     }
 
@@ -67,7 +67,7 @@ public class InMemoryLobbyRepositoryTests
     public async Task JoinAsync_returns_NotFound_for_unknown_lobby()
     {
         var repo = NewRepo();
-        var result = await repo.JoinAsync("ZZZZZZZZ", "u", "u", EmptyLib, default);
+        var result = await repo.JoinAsync("ZZZZZZZZ", "u", "u", EmptyLib, 0, default);
         Assert.Equal(JoinResult.NotFound, result.Result);
     }
 
@@ -75,10 +75,10 @@ public class InMemoryLobbyRepositoryTests
     public async Task JoinAsync_returns_Full_at_max_players()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(maxPlayers: 2), EmptyLib, default);
+        await repo.CreateAsync(NewLobby(maxPlayers: 2), EmptyLib, 0, default);
 
-        await repo.JoinAsync("AAAAAAAA", "p1", "p1", EmptyLib, default);
-        var result = await repo.JoinAsync("AAAAAAAA", "p2", "p2", EmptyLib, default);
+        await repo.JoinAsync("AAAAAAAA", "p1", "p1", EmptyLib, 0, default);
+        var result = await repo.JoinAsync("AAAAAAAA", "p2", "p2", EmptyLib, 0, default);
         Assert.Equal(JoinResult.Full, result.Result);
     }
 
@@ -86,8 +86,8 @@ public class InMemoryLobbyRepositoryTests
     public async Task LeaveAsync_non_host_decrements_count()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(), EmptyLib, default);
-        await repo.JoinAsync("AAAAAAAA", "player-1", "player-1", EmptyLib, default);
+        await repo.CreateAsync(NewLobby(), EmptyLib, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "player-1", "player-1", EmptyLib, 0, default);
 
         var result = await repo.LeaveAsync("AAAAAAAA", "player-1", default);
 
@@ -99,9 +99,9 @@ public class InMemoryLobbyRepositoryTests
     public async Task LeaveAsync_host_with_remaining_members_auto_transfers()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), EmptyLib, default);
-        await repo.JoinAsync("AAAAAAAA", "player-1", "Player One", EmptyLib, default);
-        await repo.JoinAsync("AAAAAAAA", "player-2", "Player Two", EmptyLib, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), EmptyLib, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "player-1", "Player One", EmptyLib, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "player-2", "Player Two", EmptyLib, 0, default);
 
         var result = await repo.LeaveAsync("AAAAAAAA", "host", default);
 
@@ -122,7 +122,7 @@ public class InMemoryLobbyRepositoryTests
     public async Task LeaveAsync_last_member_closes_lobby()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), EmptyLib, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), EmptyLib, 0, default);
 
         // Host is the only member; leaving closes the lobby (also covers the host case).
         var result = await repo.LeaveAsync("AAAAAAAA", "host", default);
@@ -134,7 +134,7 @@ public class InMemoryLobbyRepositoryTests
     public async Task LeaveAsync_returns_NotFound_for_unknown_user()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(), EmptyLib, default);
+        await repo.CreateAsync(NewLobby(), EmptyLib, 0, default);
 
         var result = await repo.LeaveAsync("AAAAAAAA", "nobody", default);
         Assert.Equal(LeaveOutcome.NotFound, result.Outcome);
@@ -144,8 +144,8 @@ public class InMemoryLobbyRepositoryTests
     public async Task GetMembersAsync_returns_current_members()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), EmptyLib, default);
-        await repo.JoinAsync("AAAAAAAA", "player-1", "player-1", EmptyLib, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), EmptyLib, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "player-1", "player-1", EmptyLib, 0, default);
 
         var members = await repo.GetMembersAsync("AAAAAAAA", default);
 
@@ -158,8 +158,8 @@ public class InMemoryLobbyRepositoryTests
     public async Task SearchAsync_filters_by_game_mode()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby("AAAAAAAA"), EmptyLib, default);
-        await repo.CreateAsync(NewLobby("BBBBBBBB") with { GameMode = GameMode.Quickplay }, EmptyLib, default);
+        await repo.CreateAsync(NewLobby("AAAAAAAA"), EmptyLib, 0, default);
+        await repo.CreateAsync(NewLobby("BBBBBBBB") with { GameMode = GameMode.Quickplay }, EmptyLib, 0, default);
 
         var bandOnly = await repo.SearchAsync(new LobbySearchQuery(0, 10, GameMode.Band, null, null), default);
 
@@ -171,9 +171,9 @@ public class InMemoryLobbyRepositoryTests
     public async Task SearchAsync_filters_by_query_string_against_name_and_song()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby("AAAAAAAA") with { Name = "Friday Night" }, EmptyLib, default);
-        await repo.CreateAsync(NewLobby("BBBBBBBB") with { Song = "Saturday Anthem" }, EmptyLib, default);
-        await repo.CreateAsync(NewLobby("CCCCCCCC") with { Name = "Other", Song = "Other" }, EmptyLib, default);
+        await repo.CreateAsync(NewLobby("AAAAAAAA") with { Name = "Friday Night" }, EmptyLib, 0, default);
+        await repo.CreateAsync(NewLobby("BBBBBBBB") with { Song = "Saturday Anthem" }, EmptyLib, 0, default);
+        await repo.CreateAsync(NewLobby("CCCCCCCC") with { Name = "Other", Song = "Other" }, EmptyLib, 0, default);
 
         var hits = await repo.SearchAsync(new LobbySearchQuery(0, 10, null, null, "day"), default);
 
@@ -185,7 +185,7 @@ public class InMemoryLobbyRepositoryTests
     public async Task AppendChatMessageAsync_assigns_monotonic_sequence_starting_at_1()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(), EmptyLib, default);
+        await repo.CreateAsync(NewLobby(), EmptyLib, 0, default);
 
         var sent = DateTimeOffset.UtcNow;
         var first = await repo.AppendChatMessageAsync("AAAAAAAA", "host", "Host", "hi", sent, default);
@@ -210,7 +210,7 @@ public class InMemoryLobbyRepositoryTests
     public async Task AppendChatMessageAsync_returns_null_for_non_member()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(), EmptyLib, default);
+        await repo.CreateAsync(NewLobby(), EmptyLib, 0, default);
 
         var result = await repo.AppendChatMessageAsync("AAAAAAAA", "stranger", "Stranger", "hi", DateTimeOffset.UtcNow, default);
         Assert.Null(result);
@@ -220,7 +220,7 @@ public class InMemoryLobbyRepositoryTests
     public async Task AppendChatMessageAsync_evicts_oldest_when_history_full()
     {
         var repo = NewRepo(maxChatHistorySize: 3);
-        await repo.CreateAsync(NewLobby(), EmptyLib, default);
+        await repo.CreateAsync(NewLobby(), EmptyLib, 0, default);
 
         var t = DateTimeOffset.UtcNow;
         await repo.AppendChatMessageAsync("AAAAAAAA", "host", "Host", "m1", t, default);
@@ -251,7 +251,7 @@ public class InMemoryLobbyRepositoryTests
         var repo = NewRepo();
         var hostLib = new[] { "h1", "h2", "h3" };
 
-        await repo.CreateAsync(NewLobby(), hostLib, default);
+        await repo.CreateAsync(NewLobby(), hostLib, 0, default);
 
         var lobby = await repo.GetAsync("AAAAAAAA", default);
         Assert.Equal(3, lobby!.SharedSongCount);
@@ -261,9 +261,9 @@ public class InMemoryLobbyRepositoryTests
     public async Task JoinAsync_intersects_lobby_library_with_new_player_library()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(), new[] { "h1", "h2", "h3" }, default);
+        await repo.CreateAsync(NewLobby(), new[] { "h1", "h2", "h3" }, 0, default);
 
-        var join = await repo.JoinAsync("AAAAAAAA", "player-1", "player-1", new[] { "h2", "h3", "h4" }, default);
+        var join = await repo.JoinAsync("AAAAAAAA", "player-1", "player-1", new[] { "h2", "h3", "h4" }, 0, default);
 
         Assert.Equal(JoinResult.Joined, join.Result);
         Assert.Equal(2, join.Lobby!.SharedSongCount);
@@ -275,9 +275,9 @@ public class InMemoryLobbyRepositoryTests
     public async Task JoinAsync_delta_removed_lists_hashes_no_longer_shared()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(), new[] { "h1", "h2", "h3" }, default);
+        await repo.CreateAsync(NewLobby(), new[] { "h1", "h2", "h3" }, 0, default);
 
-        var join = await repo.JoinAsync("AAAAAAAA", "player-1", "player-1", new[] { "h2" }, default);
+        var join = await repo.JoinAsync("AAAAAAAA", "player-1", "player-1", new[] { "h2" }, 0, default);
 
         Assert.NotNull(join.Delta);
         Assert.Empty(join.Delta!.Added);
@@ -288,9 +288,9 @@ public class InMemoryLobbyRepositoryTests
     public async Task JoinAsync_disjoint_library_collapses_shared_set_to_empty()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(), new[] { "h1", "h2" }, default);
+        await repo.CreateAsync(NewLobby(), new[] { "h1", "h2" }, 0, default);
 
-        var join = await repo.JoinAsync("AAAAAAAA", "player-1", "player-1", new[] { "h9", "h10" }, default);
+        var join = await repo.JoinAsync("AAAAAAAA", "player-1", "player-1", new[] { "h9", "h10" }, 0, default);
 
         Assert.Equal(JoinResult.Joined, join.Result);
         Assert.Equal(0, join.Lobby!.SharedSongCount);
@@ -301,10 +301,10 @@ public class InMemoryLobbyRepositoryTests
     public async Task JoinAsync_returns_snapshot_on_already_member_without_delta()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1", "h2" }, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1", "h2" }, 0, default);
 
         // Host attempts to "rejoin" with a different library — snapshot returned, no delta, library unchanged.
-        var rejoin = await repo.JoinAsync("AAAAAAAA", "host", "host", new[] { "h9" }, default);
+        var rejoin = await repo.JoinAsync("AAAAAAAA", "host", "host", new[] { "h9" }, 0, default);
 
         Assert.Equal(JoinResult.AlreadyMember, rejoin.Result);
         Assert.Null(rejoin.Delta);
@@ -315,10 +315,10 @@ public class InMemoryLobbyRepositoryTests
     public async Task LeaveAsync_recalculates_intersection_across_remaining_players()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1", "h2", "h3" }, default);
-        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1", "h2", "h3" }, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1", "h2", "h3" }, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1", "h2", "h3" }, 0, default);
         // p2 doesn't have h3 — pulls h3 out of the shared library.
-        await repo.JoinAsync("AAAAAAAA", "p2", "p2", new[] { "h1", "h2" }, default);
+        await repo.JoinAsync("AAAAAAAA", "p2", "p2", new[] { "h1", "h2" }, 0, default);
 
         var beforeLeave = await repo.GetAsync("AAAAAAAA", default);
         Assert.Equal(2, beforeLeave!.SharedSongCount);
@@ -336,9 +336,9 @@ public class InMemoryLobbyRepositoryTests
     public async Task LeaveAsync_with_no_newly_shared_songs_returns_empty_delta()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1", "h2" }, default);
-        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1", "h2" }, default);
-        await repo.JoinAsync("AAAAAAAA", "p2", "p2", new[] { "h1", "h2" }, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1", "h2" }, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1", "h2" }, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "p2", "p2", new[] { "h1", "h2" }, 0, default);
 
         var leave = await repo.LeaveAsync("AAAAAAAA", "p2", default);
 
@@ -353,13 +353,13 @@ public class InMemoryLobbyRepositoryTests
     public async Task Concurrent_joins_produce_correct_intersection_regardless_of_order()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1", "h2", "h3", "h4" }, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1", "h2", "h3", "h4" }, 0, default);
 
         // Two players join in parallel. Final shared library must equal hostLib ∩ libA ∩ libB
         // = {h1,h2,h3,h4} ∩ {h1,h2,h3} ∩ {h2,h3,h4} = {h2,h3}.
         await Task.WhenAll(
-            repo.JoinAsync("AAAAAAAA", "pA", "pA", new[] { "h1", "h2", "h3" }, default),
-            repo.JoinAsync("AAAAAAAA", "pB", "pB", new[] { "h2", "h3", "h4" }, default));
+            repo.JoinAsync("AAAAAAAA", "pA", "pA", new[] { "h1", "h2", "h3" }, 0, default),
+            repo.JoinAsync("AAAAAAAA", "pB", "pB", new[] { "h2", "h3", "h4" }, 0, default));
 
         var lobby = await repo.GetAsync("AAAAAAAA", default);
         Assert.Equal(2, lobby!.SharedSongCount);
@@ -369,9 +369,9 @@ public class InMemoryLobbyRepositoryTests
     public async Task JoinAsync_normalizes_duplicate_hashes_in_player_library()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(), new[] { "h1", "h2" }, default);
+        await repo.CreateAsync(NewLobby(), new[] { "h1", "h2" }, 0, default);
 
-        var join = await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1", "h1", "h2", "h2" }, default);
+        var join = await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1", "h1", "h2", "h2" }, 0, default);
 
         Assert.Equal(2, join.Lobby!.SharedSongCount);
     }
@@ -385,8 +385,8 @@ public class InMemoryLobbyRepositoryTests
     public async Task EnqueueSongAsync_assigns_monotonic_sequences_and_excludes_requester_from_missing()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1", "h2" }, default);
-        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h2" }, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1", "h2" }, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h2" }, 0, default);
 
         var t = DateTimeOffset.UtcNow;
         var first = await repo.EnqueueSongAsync("AAAAAAAA", "host", "h1", t, default);
@@ -408,7 +408,7 @@ public class InMemoryLobbyRepositoryTests
     public async Task EnqueueSongAsync_rejects_NotInLibrary_when_requester_doesnt_own()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, 0, default);
 
         var result = await repo.EnqueueSongAsync("AAAAAAAA", "host", "h2", DateTimeOffset.UtcNow, default);
 
@@ -420,7 +420,7 @@ public class InMemoryLobbyRepositoryTests
     public async Task EnqueueSongAsync_rejects_NotMember_for_non_member()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, 0, default);
 
         var result = await repo.EnqueueSongAsync("AAAAAAAA", "stranger", "h1", DateTimeOffset.UtcNow, default);
 
@@ -431,7 +431,7 @@ public class InMemoryLobbyRepositoryTests
     public async Task EnqueueSongAsync_returns_QueueFull_when_capacity_reached()
     {
         var repo = NewRepoWithQueueCap(2);
-        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1", "h2", "h3" }, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1", "h2", "h3" }, 0, default);
 
         await repo.EnqueueSongAsync("AAAAAAAA", "host", "h1", DateTimeOffset.UtcNow, default);
         await repo.EnqueueSongAsync("AAAAAAAA", "host", "h2", DateTimeOffset.UtcNow, default);
@@ -444,8 +444,8 @@ public class InMemoryLobbyRepositoryTests
     public async Task RemoveQueuedSongAsync_allowed_for_host_even_on_other_users_entry()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, default);
-        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1" }, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1" }, 0, default);
         var added = await repo.EnqueueSongAsync("AAAAAAAA", "p1", "h1", DateTimeOffset.UtcNow, default);
 
         var result = await repo.RemoveQueuedSongAsync("AAAAAAAA", "host", added.Entry!.Sequence, default);
@@ -459,8 +459,8 @@ public class InMemoryLobbyRepositoryTests
     public async Task RemoveQueuedSongAsync_allowed_for_requester()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, default);
-        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1" }, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1" }, 0, default);
         var added = await repo.EnqueueSongAsync("AAAAAAAA", "p1", "h1", DateTimeOffset.UtcNow, default);
 
         var result = await repo.RemoveQueuedSongAsync("AAAAAAAA", "p1", added.Entry!.Sequence, default);
@@ -472,9 +472,9 @@ public class InMemoryLobbyRepositoryTests
     public async Task RemoveQueuedSongAsync_rejected_for_non_host_non_requester()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, default);
-        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1" }, default);
-        await repo.JoinAsync("AAAAAAAA", "p2", "p2", new[] { "h1" }, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1" }, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "p2", "p2", new[] { "h1" }, 0, default);
         var added = await repo.EnqueueSongAsync("AAAAAAAA", "p1", "h1", DateTimeOffset.UtcNow, default);
 
         var result = await repo.RemoveQueuedSongAsync("AAAAAAAA", "p2", added.Entry!.Sequence, default);
@@ -487,7 +487,7 @@ public class InMemoryLobbyRepositoryTests
     public async Task RemoveQueuedSongAsync_returns_EntryMissing_for_unknown_sequence()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, 0, default);
 
         var result = await repo.RemoveQueuedSongAsync("AAAAAAAA", "host", 999, default);
 
@@ -498,12 +498,12 @@ public class InMemoryLobbyRepositoryTests
     public async Task JoinAsync_appends_new_player_to_MissingFor_for_unowned_queue_entries()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1", "h2" }, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1", "h2" }, 0, default);
         await repo.EnqueueSongAsync("AAAAAAAA", "host", "h1", DateTimeOffset.UtcNow, default);
         await repo.EnqueueSongAsync("AAAAAAAA", "host", "h2", DateTimeOffset.UtcNow, default);
 
         // p1 owns h2 but not h1.
-        var join = await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h2" }, default);
+        var join = await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h2" }, 0, default);
 
         Assert.NotNull(join.QueueAvailabilityUpdates);
         var delta = Assert.Single(join.QueueAvailabilityUpdates!);
@@ -522,9 +522,9 @@ public class InMemoryLobbyRepositoryTests
     public async Task LeaveAsync_removes_leavers_entries_and_strips_them_from_MissingFor()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host", maxPlayers: 4), new[] { "h1", "h2" }, default);
-        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h2" }, default);
-        await repo.JoinAsync("AAAAAAAA", "p2", "p2", new[] { "h2" }, default);
+        await repo.CreateAsync(NewLobby(hostId: "host", maxPlayers: 4), new[] { "h1", "h2" }, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h2" }, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "p2", "p2", new[] { "h2" }, 0, default);
 
         // host queues a song neither p1 nor p2 owns (h1) — both end up in MissingFor.
         var hostEntry = await repo.EnqueueSongAsync("AAAAAAAA", "host", "h1", DateTimeOffset.UtcNow, default);
@@ -563,8 +563,8 @@ public class InMemoryLobbyRepositoryTests
     public async Task TransferHostAsync_swaps_host_and_returns_change()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host") with { HostName = "Host" }, EmptyLib, default);
-        await repo.JoinAsync("AAAAAAAA", "p1", "Player One", EmptyLib, default);
+        await repo.CreateAsync(NewLobby(hostId: "host") with { HostName = "Host" }, EmptyLib, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "p1", "Player One", EmptyLib, 0, default);
 
         var result = await repo.TransferHostAsync("AAAAAAAA", "host", "p1", default);
 
@@ -580,9 +580,9 @@ public class InMemoryLobbyRepositoryTests
     public async Task TransferHostAsync_rejects_non_host_caller()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), EmptyLib, default);
-        await repo.JoinAsync("AAAAAAAA", "p1", "p1", EmptyLib, default);
-        await repo.JoinAsync("AAAAAAAA", "p2", "p2", EmptyLib, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), EmptyLib, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "p1", "p1", EmptyLib, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "p2", "p2", EmptyLib, 0, default);
 
         var result = await repo.TransferHostAsync("AAAAAAAA", "p1", "p2", default);
 
@@ -594,7 +594,7 @@ public class InMemoryLobbyRepositoryTests
     public async Task TransferHostAsync_rejects_target_not_member()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), EmptyLib, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), EmptyLib, 0, default);
 
         var result = await repo.TransferHostAsync("AAAAAAAA", "host", "stranger", default);
 
@@ -605,7 +605,7 @@ public class InMemoryLobbyRepositoryTests
     public async Task TransferHostAsync_rejects_target_is_host()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), EmptyLib, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), EmptyLib, 0, default);
 
         var result = await repo.TransferHostAsync("AAAAAAAA", "host", "host", default);
 
@@ -626,9 +626,9 @@ public class InMemoryLobbyRepositoryTests
     public async Task KickPlayerAsync_removes_member_and_recomputes_intersection()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1", "h2", "h3" }, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1", "h2", "h3" }, 0, default);
         // p1 lacks h3 — shared library collapses to {h1, h2} after they join.
-        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1", "h2" }, default);
+        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1", "h2" }, 0, default);
 
         var result = await repo.KickPlayerAsync("AAAAAAAA", "host", "p1", default);
 
@@ -648,8 +648,8 @@ public class InMemoryLobbyRepositoryTests
     public async Task KickPlayerAsync_removes_kicked_users_queue_entries()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, default);
-        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1" }, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1" }, 0, default);
         var queued = await repo.EnqueueSongAsync("AAAAAAAA", "p1", "h1", DateTimeOffset.UtcNow, default);
 
         var result = await repo.KickPlayerAsync("AAAAAAAA", "host", "p1", default);
@@ -664,9 +664,9 @@ public class InMemoryLobbyRepositoryTests
     public async Task KickPlayerAsync_rejects_non_host_caller()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), EmptyLib, default);
-        await repo.JoinAsync("AAAAAAAA", "p1", "p1", EmptyLib, default);
-        await repo.JoinAsync("AAAAAAAA", "p2", "p2", EmptyLib, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), EmptyLib, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "p1", "p1", EmptyLib, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "p2", "p2", EmptyLib, 0, default);
 
         var result = await repo.KickPlayerAsync("AAAAAAAA", "p1", "p2", default);
 
@@ -677,8 +677,8 @@ public class InMemoryLobbyRepositoryTests
     public async Task KickPlayerAsync_rejects_target_is_host()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), EmptyLib, default);
-        await repo.JoinAsync("AAAAAAAA", "p1", "p1", EmptyLib, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), EmptyLib, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "p1", "p1", EmptyLib, 0, default);
 
         var result = await repo.KickPlayerAsync("AAAAAAAA", "host", "host", default);
 
@@ -689,7 +689,7 @@ public class InMemoryLobbyRepositoryTests
     public async Task KickPlayerAsync_rejects_target_not_member()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), EmptyLib, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), EmptyLib, 0, default);
 
         var result = await repo.KickPlayerAsync("AAAAAAAA", "host", "stranger", default);
 
@@ -708,11 +708,11 @@ public class InMemoryLobbyRepositoryTests
     public async Task JoinAsync_returns_Banned_after_kick()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), EmptyLib, default);
-        await repo.JoinAsync("AAAAAAAA", "p1", "p1", EmptyLib, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), EmptyLib, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "p1", "p1", EmptyLib, 0, default);
         await repo.KickPlayerAsync("AAAAAAAA", "host", "p1", default);
 
-        var rejoin = await repo.JoinAsync("AAAAAAAA", "p1", "p1", EmptyLib, default);
+        var rejoin = await repo.JoinAsync("AAAAAAAA", "p1", "p1", EmptyLib, 0, default);
 
         Assert.Equal(JoinResult.Banned, rejoin.Result);
         Assert.Null(rejoin.Lobby);
@@ -722,8 +722,8 @@ public class InMemoryLobbyRepositoryTests
     public async Task FinishGameAsync_pops_head_of_queue_and_clears_song_runtime_fields()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1", "h2" }, default);
-        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1", "h2" }, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1", "h2" }, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1", "h2" }, 0, default);
 
         // Queue two songs in order.
         var first = await repo.EnqueueSongAsync("AAAAAAAA", "host", "h1", DateTimeOffset.UtcNow, default);
@@ -749,14 +749,36 @@ public class InMemoryLobbyRepositoryTests
     }
 
     [Fact]
+    public async Task BeginStartGame_then_Abort_preserves_ready_flags_and_allows_retry()
+    {
+        // An allocation failure rolls the lobby back via AbortStartGameAsync. The per-member
+        // IsBackInLobby flags must survive that rollback so the host can retry StartGame —
+        // they are only flipped to false on the GameStarted transition (ConfirmStartGameAsync).
+        var repo = NewRepo();
+        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1" }, 0, default);
+        await repo.EnqueueSongAsync("AAAAAAAA", "host", "h1", DateTimeOffset.UtcNow, default);
+
+        // First attempt reaches Starting, then the allocator "fails" and we abort.
+        var firstBegin = await repo.BeginStartGameAsync("AAAAAAAA", "host", default);
+        Assert.Equal(StartGameOutcome.Started, firstBegin.Outcome);
+        await repo.AbortStartGameAsync("AAAAAAAA", default);
+
+        // Retry: the readiness gate must still pass rather than failing with
+        // PlayersStillInResults because of stale IsBackInLobby flags.
+        var retryBegin = await repo.BeginStartGameAsync("AAAAAAAA", "host", default);
+        Assert.Equal(StartGameOutcome.Started, retryBegin.Outcome);
+    }
+
+    [Fact]
     public async Task FinishGameAsync_with_empty_queue_returns_null_PlayedSong()
     {
         // Defensive: a member-departure cascade can drain the queue during gameplay. FinishGame
         // should still flip status back to SongSelect without panicking, just without a removal
         // broadcast.
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, default);
-        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1" }, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1" }, 0, default);
         await repo.EnqueueSongAsync("AAAAAAAA", "host", "h1", DateTimeOffset.UtcNow, default);
         await StartGameAsync(repo, "AAAAAAAA", "host");
 
@@ -767,8 +789,8 @@ public class InMemoryLobbyRepositoryTests
         // Easier path: just put the lobby back into GameStarted via a fresh setup.
 
         var repo2 = NewRepo();
-        await repo2.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, default);
-        await repo2.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1" }, default);
+        await repo2.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, 0, default);
+        await repo2.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1" }, 0, default);
         var added = await repo2.EnqueueSongAsync("AAAAAAAA", "host", "h1", DateTimeOffset.UtcNow, default);
         await StartGameAsync(repo2, "AAAAAAAA", "host");
         // Drain the queue manually via a host removal.
@@ -784,8 +806,8 @@ public class InMemoryLobbyRepositoryTests
     public async Task SongStartedAsync_sets_started_at_and_duration_when_GameStarted()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, default);
-        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1" }, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, 0, default);
+        await repo.JoinAsync("AAAAAAAA", "p1", "p1", new[] { "h1" }, 0, default);
         await repo.EnqueueSongAsync("AAAAAAAA", "host", "h1", DateTimeOffset.UtcNow, default);
         await StartGameAsync(repo, "AAAAAAAA", "host");
 
@@ -801,7 +823,7 @@ public class InMemoryLobbyRepositoryTests
     public async Task SongStartedAsync_returns_NotStarted_when_lobby_in_song_select()
     {
         var repo = NewRepo();
-        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, default);
+        await repo.CreateAsync(NewLobby(hostId: "host"), new[] { "h1" }, 0, default);
 
         var result = await repo.SongStartedAsync("AAAAAAAA", DateTimeOffset.UtcNow, durationMs: 1000, default);
 

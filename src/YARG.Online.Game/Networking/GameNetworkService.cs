@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using LiteNetLib;
 using LiteNetLib.Utils;
 using Microsoft.Extensions.Hosting;
@@ -12,8 +13,6 @@ namespace YARG.Online.Game.Networking;
 
 public sealed class GameNetworkService : BackgroundService
 {
-    private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(15);
-
     // Time between the cue broadcast and the resolved song-time origin. Each client computes its
     // local SongRunner start using SongOriginUtcMs, so this is essentially the pre-roll budget for
     // every client to see the cue + start their countdown UI.
@@ -31,8 +30,19 @@ public sealed class GameNetworkService : BackgroundService
     private readonly GameSessionManager _sessions;
     private readonly ILobbiesClient _lobbies;
     private readonly AgonesReadinessSignal _readiness;
+    private readonly IRelaySender _relay;
     private readonly ILogger<GameNetworkService> _logger;
     private NetManager? _manager;
+
+    // Pending identities keyed by remote endpoint (as a string —
+    // "ip:port") so the key is identical between a ConnectionRequest's
+    // RemoteEndPoint.ToString() and a NetPeer.ToString(). Populated
+    // *before* request.Accept() so OnPeerConnected can find the identity
+    // even when LiteNetLib raises PeerConnectedEvent synchronously from
+    // inside Accept() (which it does — the peer object is fully wired
+    // before Accept returns). The registry add by peer.Id happens in
+    // OnPeerConnected once we know the LiteNetLib-assigned peer id.
+    private readonly ConcurrentDictionary<string, AuthenticatedPeer> _pendingByEndpoint = new();
 
     public GameNetworkService(
         IOptions<NetworkOptions> options,
@@ -41,6 +51,7 @@ public sealed class GameNetworkService : BackgroundService
         GameSessionManager sessions,
         ILobbiesClient lobbies,
         AgonesReadinessSignal readiness,
+        IRelaySender relay,
         ILogger<GameNetworkService> logger)
     {
         _options = options.Value;
@@ -49,13 +60,14 @@ public sealed class GameNetworkService : BackgroundService
         _sessions = sessions;
         _lobbies = lobbies;
         _readiness = readiness;
+        _relay = relay;
         _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var listener = new EventBasedNetListener();
-        _manager = new NetManager(listener);
+        _manager = new NetManager(listener) { UnsyncedEvents = true };
 
         listener.ConnectionRequestEvent += OnConnectionRequest;
         listener.PeerConnectedEvent += OnPeerConnected;
@@ -79,11 +91,8 @@ public sealed class GameNetworkService : BackgroundService
 
         try
         {
-            using var timer = new PeriodicTimer(PollInterval);
-            while (await timer.WaitForNextTickAsync(stoppingToken))
-            {
-                _manager.PollEvents();
-            }
+            // Hold here until the host shuts us down.
+            await Task.Delay(Timeout.Infinite, stoppingToken);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
@@ -137,27 +146,64 @@ public sealed class GameNetworkService : BackgroundService
             return;
         }
 
-        var peer = request.Accept();
         var identity = new AuthenticatedPeer(
             result.UserId!,
             result.DisplayName ?? result.UserId!,
             result.LobbyId!,
             result.ExpectedMembers,
             result.IsHost);
-        if (!_registry.TryAdd(peer.Id, identity))
+
+        // Stage the identity by remote endpoint BEFORE Accept(). LiteNetLib
+        // raises PeerConnectedEvent synchronously inside Accept() under
+        // UnsyncedEvents — if we add to the peer-id-keyed registry only after
+        // Accept returns, OnPeerConnected runs first and finds nothing. The
+        // endpoint key is the only stable identifier we have before
+        // LiteNetLib assigns peer.Id. Both ConnectionRequest.RemoteEndPoint
+        // and NetPeer share the same "ip:port" ToString() form.
+        var endpointKey = request.RemoteEndPoint.ToString();
+        _pendingByEndpoint[endpointKey] = identity;
+
+        NetPeer? peer = null;
+        try
         {
-            _logger.LogWarning(
-                "Peer {PeerId} already in registry — disconnecting duplicate.", peer.Id);
-            peer.Disconnect();
+            peer = request.Accept();
+        }
+        finally
+        {
+            // If Accept failed (peer == null) or OnPeerConnected has already
+            // consumed the staged entry, this TryRemove no-ops.
+            if (peer is null)
+            {
+                _pendingByEndpoint.TryRemove(endpointKey, out _);
+            }
         }
     }
 
     private void OnPeerConnected(NetPeer peer)
     {
-        if (!_registry.TryGet(peer.Id, out var identity) || identity is null)
+        // Pull the staged identity by endpoint, then promote it into the
+        // peer-id-keyed registry. From this point on, every other handler
+        // (including the receive path) keys on peer.Id, so the endpoint
+        // entry's job is done.
+        var endpointKey = peer.ToString();
+        AuthenticatedPeer? identity = null;
+        if (_pendingByEndpoint.TryRemove(endpointKey, out var staged))
+        {
+            identity = staged;
+        }
+
+        if (identity is null)
         {
             _logger.LogWarning(
-                "Peer {PeerId} connected without a registry entry — disconnecting.", peer.Id);
+                "Peer {PeerId} connected without a staged identity — disconnecting.", peer.Id);
+            peer.Disconnect();
+            return;
+        }
+
+        if (!_registry.TryAdd(peer.Id, identity))
+        {
+            _logger.LogWarning(
+                "Peer {PeerId} already in registry — disconnecting duplicate.", peer.Id);
             peer.Disconnect();
             return;
         }
@@ -172,6 +218,20 @@ public sealed class GameNetworkService : BackgroundService
 
     private void TryFireGameStart(string lobbyId, TryStartResult result)
     {
+        if (result.ChartMismatch)
+        {
+            // Chart hashes disagreed across peers.
+            _logger.LogWarning(
+                "Lobby {LobbyId}: chart hash mismatch across peers — aborting session.",
+                lobbyId);
+            var forced = _sessions.ForceEndSession(lobbyId);
+            if (forced is { ReadyToEnd: true, Peers: { Count: > 0 } peers })
+            {
+                BroadcastGameEnd(peers, lobbyId);
+            }
+            return;
+        }
+
         if (!result.ReadyToStart) return;
 
         BroadcastGameStart(lobbyId, result.Peers);
@@ -204,6 +264,8 @@ public sealed class GameNetworkService : BackgroundService
                 Instrument = ps.Loadout.Instrument,
                 Difficulty = ps.Loadout.Difficulty,
                 EnginePreset = ps.Loadout.EnginePreset,
+                NoteSpeed = ps.Loadout.NoteSpeed,
+                Modifiers = ps.Loadout.Modifiers,
             };
         }
 
@@ -303,6 +365,10 @@ public sealed class GameNetworkService : BackgroundService
 
     private void OnPeerDisconnected(NetPeer peer, DisconnectInfo info)
     {
+        // Clean up the staging slot in case the disconnect fired before
+        // OnPeerConnected ever ran (extremely rare — but cheap to guard).
+        _pendingByEndpoint.TryRemove(peer.ToString(), out _);
+
         _registry.TryRemove(peer.Id, out _);
         var dc = _sessions.RemovePeer(peer.Id);
         _logger.LogInformation(
@@ -350,8 +416,32 @@ public sealed class GameNetworkService : BackgroundService
                 case PacketOpcode.SetLoadout:
                     HandleSetLoadout(peer, reader);
                     break;
-                case PacketOpcode.EngineInputBatch:
-                    HandleEngineInputBatch(peer, reader);
+                case PacketOpcode.ClearLoadout:
+                    HandleClearLoadout(peer);
+                    break;
+                case PacketOpcode.NoteMissed:
+                    HandleNoteMissed(peer, reader);
+                    break;
+                case PacketOpcode.StarPowerActivated:
+                    HandleStarPowerActivated(peer, reader);
+                    break;
+                case PacketOpcode.Whammy:
+                    HandleWhammy(peer, reader);
+                    break;
+                case PacketOpcode.VocalPitch:
+                    HandleVocalPitch(peer, reader);
+                    break;
+                case PacketOpcode.SustainReleased:
+                    HandleSustainReleased(peer, reader);
+                    break;
+                case PacketOpcode.Overstrum:
+                    HandleOverstrum(peer, reader);
+                    break;
+                case PacketOpcode.NoteHit:
+                    HandleNoteHit(peer, reader);
+                    break;
+                case PacketOpcode.EngineStateSnapshot:
+                    HandleEngineStateSnapshot(peer, reader);
                     break;
                 case PacketOpcode.PeerReady:
                     HandlePeerReady(peer);
@@ -394,7 +484,7 @@ public sealed class GameNetworkService : BackgroundService
         if (!_sessions.TryStoreLoadout(identity.LobbyId, peer.Id, packet, out var result))
         {
             _logger.LogWarning(
-                "SetLoadout rejected for peer {PeerId} lobby {LobbyId} (no session, peer not connected, or already set).",
+                "SetLoadout rejected for peer {PeerId} lobby {LobbyId} (no session or peer not connected).",
                 peer.Id, identity.LobbyId);
             return;
         }
@@ -406,31 +496,180 @@ public sealed class GameNetworkService : BackgroundService
         TryFireGameStart(identity.LobbyId, result);
     }
 
-    private void HandleEngineInputBatch(NetPeer peer, NetPacketReader reader)
+    private void HandleClearLoadout(NetPeer peer)
     {
-        var packet = new EngineInputBatchPacket();
+        if (!_registry.TryGet(peer.Id, out var identity) || identity is null)
+        {
+            _logger.LogWarning("ClearLoadout from unregistered peer {PeerId}; ignoring.", peer.Id);
+            return;
+        }
+
+        if (_sessions.TryRemoveLoadout(identity.LobbyId, peer.Id))
+        {
+            _logger.LogInformation(
+                "Loadout cleared (unready) by {UserId} for lobby {LobbyId}.",
+                identity.UserId, identity.LobbyId);
+        }
+        else
+        {
+            // Either the session is missing, the peer wasn't connected, or the game already
+            // started. None are fatal — this is a passive request and a silent failure
+            // matches the "if you're quick enough" UX (after game start, unready can't apply).
+            _logger.LogDebug(
+                "ClearLoadout no-op for peer {PeerId} lobby {LobbyId} (no stored loadout, or game already started).",
+                peer.Id, identity.LobbyId);
+        }
+    }
+
+    private void HandleNoteMissed(NetPeer peer, NetPacketReader reader)
+    {
+        var packet = new NoteMissedPacket();
         packet.Deserialize(reader);
 
-        if (!_sessions.TryGetFanoutTargets(peer.Id, out var targets))
-        {
-            // Either the peer's session isn't live yet (cue not broadcast) or the peer isn't in a
-            // session at all. Drop silently — clients can be sloppy about timing the first batch.
-            return;
-        }
-
-        if (targets.Count == 0)
+        if (!_sessions.TryGetFanoutTargets(peer.Id, out var targets) || targets.Count == 0)
         {
             return;
         }
 
-        // Stamp the sender id and re-emit. The body bytes are identical to what the sender wrote
-        // except for the leading PeerId int.
         packet.PeerId = peer.Id;
         var writer = new NetDataWriter();
-        GamePacketWriter.Write(writer, PacketOpcode.EngineInputBatch, packet);
+        GamePacketWriter.Write(writer, PacketOpcode.NoteMissed, packet);
         foreach (var target in targets)
         {
-            target.Send(writer, DeliveryMethod.ReliableOrdered);
+            _relay.Send(target, writer, DeliveryMethod.ReliableOrdered);
+        }
+    }
+
+    private void HandleStarPowerActivated(NetPeer peer, NetPacketReader reader)
+    {
+        var packet = new StarPowerActivatedPacket();
+        packet.Deserialize(reader);
+
+        if (!_sessions.TryGetFanoutTargets(peer.Id, out var targets) || targets.Count == 0)
+        {
+            return;
+        }
+
+        packet.PeerId = peer.Id;
+        var writer = new NetDataWriter();
+        GamePacketWriter.Write(writer, PacketOpcode.StarPowerActivated, packet);
+        foreach (var target in targets)
+        {
+            _relay.Send(target, writer, DeliveryMethod.ReliableOrdered);
+        }
+    }
+
+    private void HandleWhammy(NetPeer peer, NetPacketReader reader)
+    {
+        var packet = new WhammyPacket();
+        packet.Deserialize(reader);
+
+        if (!_sessions.TryGetFanoutTargets(peer.Id, out var targets) || targets.Count == 0)
+        {
+            return;
+        }
+
+        packet.PeerId = peer.Id;
+        var writer = new NetDataWriter();
+        GamePacketWriter.Write(writer, PacketOpcode.Whammy, packet);
+        foreach (var target in targets)
+        {
+            _relay.Send(target, writer, DeliveryMethod.ReliableOrdered);
+        }
+    }
+
+    private void HandleVocalPitch(NetPeer peer, NetPacketReader reader)
+    {
+        var packet = new VocalPitchPacket();
+        packet.Deserialize(reader);
+
+        if (!_sessions.TryGetFanoutTargets(peer.Id, out var targets) || targets.Count == 0)
+        {
+            return;
+        }
+
+        packet.PeerId = peer.Id;
+        var writer = new NetDataWriter();
+        GamePacketWriter.Write(writer, PacketOpcode.VocalPitch, packet);
+        foreach (var target in targets)
+        {
+            _relay.Send(target, writer, DeliveryMethod.ReliableOrdered);
+        }
+    }
+
+    private void HandleSustainReleased(NetPeer peer, NetPacketReader reader)
+    {
+        var packet = new SustainReleasedPacket();
+        packet.Deserialize(reader);
+
+        if (!_sessions.TryGetFanoutTargets(peer.Id, out var targets) || targets.Count == 0)
+        {
+            return;
+        }
+
+        packet.PeerId = peer.Id;
+        var writer = new NetDataWriter();
+        GamePacketWriter.Write(writer, PacketOpcode.SustainReleased, packet);
+        foreach (var target in targets)
+        {
+            _relay.Send(target, writer, DeliveryMethod.ReliableOrdered);
+        }
+    }
+
+    private void HandleOverstrum(NetPeer peer, NetPacketReader reader)
+    {
+        var packet = new OverstrumPacket();
+        packet.Deserialize(reader);
+
+        if (!_sessions.TryGetFanoutTargets(peer.Id, out var targets) || targets.Count == 0)
+        {
+            return;
+        }
+
+        packet.PeerId = peer.Id;
+        var writer = new NetDataWriter();
+        GamePacketWriter.Write(writer, PacketOpcode.Overstrum, packet);
+        foreach (var target in targets)
+        {
+            _relay.Send(target, writer, DeliveryMethod.ReliableOrdered);
+        }
+    }
+
+    private void HandleNoteHit(NetPeer peer, NetPacketReader reader)
+    {
+        var packet = new NoteHitPacket();
+        packet.Deserialize(reader);
+
+        if (!_sessions.TryGetFanoutTargets(peer.Id, out var targets) || targets.Count == 0)
+        {
+            return;
+        }
+
+        packet.PeerId = peer.Id;
+        var writer = new NetDataWriter();
+        GamePacketWriter.Write(writer, PacketOpcode.NoteHit, packet);
+        foreach (var target in targets)
+        {
+            _relay.Send(target, writer, DeliveryMethod.ReliableOrdered);
+        }
+    }
+
+    private void HandleEngineStateSnapshot(NetPeer peer, NetPacketReader reader)
+    {
+        var packet = new EngineStateSnapshotPacket();
+        packet.Deserialize(reader);
+
+        if (!_sessions.TryGetFanoutTargets(peer.Id, out var targets) || targets.Count == 0)
+        {
+            return;
+        }
+
+        packet.PeerId = peer.Id;
+        var writer = new NetDataWriter();
+        GamePacketWriter.Write(writer, PacketOpcode.EngineStateSnapshot, packet);
+        foreach (var target in targets)
+        {
+            _relay.Send(target, writer, DeliveryMethod.ReliableOrdered);
         }
     }
 

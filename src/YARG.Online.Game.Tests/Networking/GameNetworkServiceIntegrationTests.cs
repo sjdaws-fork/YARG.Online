@@ -68,6 +68,8 @@ public class GameNetworkServiceIntegrationTests : IAsyncLifetime
         builder.Services.AddSingleton<AuthenticatedPeerRegistry>();
         builder.Services.AddSingleton<GameSessionManager>();
         builder.Services.AddSingleton<AgonesReadinessSignal>();
+        builder.Services.AddSingleton<IRelaySender, PassthroughRelaySender>();
+        builder.Services.AddOptions<LatencySimulatorOptions>();
         builder.Services.AddSingleton<RecordingLobbiesClient>();
         builder.Services.AddSingleton<ILobbiesClient>(sp => sp.GetRequiredService<RecordingLobbiesClient>());
         builder.Services.AddHostedService<GameNetworkService>();
@@ -356,45 +358,6 @@ public class GameNetworkServiceIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task EngineInput_before_cue_is_not_fanned_out()
-    {
-        const string lobby = "lob_input_pre_cue";
-        var (host, other) = await ConnectBothAndStart(lobby);
-
-        host.SendEngineInput(time: 0.5, action: 7, value: 1);
-        await Task.Delay(200);
-        Assert.Empty(other.PayloadsByOpcode(PacketOpcode.EngineInputBatch));
-    }
-
-    [Fact]
-    public async Task EngineInput_after_cue_is_fanned_out_to_other_peers_only()
-    {
-        const string lobby = "lob_input_post_cue";
-        var (host, other) = await ConnectBothAndStart(lobby);
-
-        host.SendPeerReady();
-        other.SendPeerReady();
-        await WaitForAsync(() => host.ReceivedOpcodes.Contains(PacketOpcode.GameStartCue)
-                                 && other.ReceivedOpcodes.Contains(PacketOpcode.GameStartCue));
-
-        host.SendEngineInput(time: 1.25, action: 42, value: -7);
-
-        await WaitForAsync(() => other.PayloadsByOpcode(PacketOpcode.EngineInputBatch).Count >= 1);
-
-        // Sender must not receive its own input back.
-        Assert.Empty(host.PayloadsByOpcode(PacketOpcode.EngineInputBatch));
-
-        var fanout = other.PayloadsByOpcode(PacketOpcode.EngineInputBatch).Single();
-        var packet = new EngineInputBatchPacket();
-        packet.Deserialize(new NetDataReader(fanout));
-        Assert.Equal(host.ConnectedPeer!.RemoteId, packet.PeerId);
-        var record = Assert.Single(packet.Inputs);
-        Assert.Equal(1.25, record.Time);
-        Assert.Equal(42, record.Action);
-        Assert.Equal(-7, record.Value);
-    }
-
-    [Fact]
     public async Task GameComplete_from_all_peers_broadcasts_GameEnd()
     {
         const string lobby = "lob_complete";
@@ -587,7 +550,14 @@ public class GameNetworkServiceIntegrationTests : IAsyncLifetime
             };
         }
 
-        public void SendLoadout(InstrumentId instrument = InstrumentId.FiveFretGuitar, DifficultyId difficulty = DifficultyId.Expert)
+        // Default chart hash for tests — non-zero so the chart-mismatch gate
+        // doesn't trip. Tests that exercise the mismatch path should override.
+        private static readonly byte[] DefaultChartHash = MakeHash(0x11);
+
+        public void SendLoadout(
+            InstrumentId instrument = InstrumentId.FiveFretGuitar,
+            DifficultyId difficulty = DifficultyId.Expert,
+            byte[]? chartHash = null)
         {
             if (ConnectedPeer is null)
             {
@@ -599,8 +569,16 @@ public class GameNetworkServiceIntegrationTests : IAsyncLifetime
             {
                 Instrument = instrument,
                 Difficulty = difficulty,
+                ChartHash = chartHash ?? DefaultChartHash,
             });
             ConnectedPeer.Send(writer, DeliveryMethod.ReliableOrdered);
+        }
+
+        public static byte[] MakeHash(byte fillByte)
+        {
+            var hash = new byte[SetLoadoutPacket.ChartHashLength];
+            for (int i = 0; i < hash.Length; i++) hash[i] = fillByte;
+            return hash;
         }
 
         public void SendPeerReady()
@@ -630,17 +608,6 @@ public class GameNetworkServiceIntegrationTests : IAsyncLifetime
             ConnectedPeer!.Send(writer, DeliveryMethod.ReliableOrdered);
         }
 
-        public void SendEngineInput(double time, int action, int value)
-        {
-            EnsureConnected();
-            var writer = new NetDataWriter();
-            GamePacketWriter.Write(writer, PacketOpcode.EngineInputBatch, new EngineInputBatchPacket
-            {
-                PeerId = 0, // server overwrites
-                Inputs = new[] { new EngineInputRecord(time, action, value) },
-            });
-            ConnectedPeer!.Send(writer, DeliveryMethod.ReliableOrdered);
-        }
 
         private void EnsureConnected()
         {

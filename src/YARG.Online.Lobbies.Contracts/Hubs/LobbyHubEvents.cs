@@ -4,7 +4,11 @@ using YARG.Online.Lobbies.Contracts.Enums;
 
 namespace YARG.Online.Lobbies.Contracts.Hubs;
 
-public sealed record PlayerJoinedEvent(string LobbyId, string UserId, string DisplayName);
+public sealed record PlayerJoinedEvent(string LobbyId, string UserId, string DisplayName)
+{
+    /// <summary>The joining member's selected instrument as a YARG.Core.Instrument byte. 0 if unspecified.</summary>
+    public byte Instrument { get; init; }
+}
 
 public sealed record PlayerLeftEvent(string LobbyId, string UserId);
 
@@ -36,3 +40,11 @@ public sealed record GameStartedEvent(
     DateTimeOffset ExpiresAt);
 
 public sealed record LobbyStatusChangedEvent(string LobbyId, LobbyStatus Status);
+
+/// <summary>
+/// Broadcast when a member's "back in lobby" flag flips. Flipped to false
+/// for every member when the host starts a song, and back to true for an
+/// individual member when they invoke <see cref="ILobbyHub.LeaveResults"/>
+/// (the post-game results screen calls this on Continue).
+/// </summary>
+public sealed record PlayerLobbyReadyChangedEvent(string LobbyId, string UserId, bool IsBackInLobby);

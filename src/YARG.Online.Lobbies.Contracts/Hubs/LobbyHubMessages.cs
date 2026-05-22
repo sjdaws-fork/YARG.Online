@@ -12,13 +12,35 @@ public sealed record CreateLobbyArgs(
     Region Region,
     string? Song,
     int MaxPlayers,
-    SongLibraryDto Library);
+    SongLibraryDto Library)
+{
+    /// <summary>Caller's selected instrument as a YARG.Core.Instrument byte. 0 if unspecified.</summary>
+    public byte Instrument { get; init; }
+}
 
 public sealed record CreateLobbyResult(LobbyDto Lobby);
 
-public sealed record EnterLobbyArgs(string LobbyId, SongLibraryDto Library);
+public sealed record EnterLobbyArgs(string LobbyId, SongLibraryDto Library)
+{
+    /// <summary>Caller's selected instrument as a YARG.Core.Instrument byte. 0 if unspecified.</summary>
+    public byte Instrument { get; init; }
+}
 
-public sealed record LobbyMemberDto(string UserId, string DisplayName);
+public sealed record LobbyMemberDto(string UserId, string DisplayName)
+{
+    /// <summary>This member's selected instrument as a YARG.Core.Instrument byte. 0 if unspecified.</summary>
+    public byte Instrument { get; init; }
+
+    /// <summary>
+    /// True when the member is on the lobby (song-select) screen; false while
+    /// they're still in gameplay or viewing the post-game results screen.
+    /// The host's Start button is gated on every member being true. Defaults
+    /// to true on first join so the host can immediately start the first
+    /// song; flips to false on <c>StartGame</c>, back to true via
+    /// <see cref="ILobbyHub.LeaveResults"/>.
+    /// </summary>
+    public bool IsBackInLobby { get; init; } = true;
+}
 
 public sealed record EnterLobbyResult(
     LobbyDto Lobby,

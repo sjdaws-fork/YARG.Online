@@ -13,6 +13,13 @@ var builder = Host.CreateApplicationBuilder(args);
 builder.Services.AddOptions<NetworkOptions>()
     .Bind(builder.Configuration.GetSection(NetworkOptions.SectionName));
 
+builder.Services.AddOptions<LatencySimulatorOptions>()
+    .Bind(builder.Configuration.GetSection(LatencySimulatorOptions.SectionName))
+    .Validate(o => o.DelayMs >= 0, "LatencySimulator:DelayMs must be non-negative.")
+    .Validate(o => o.JitterMs >= 0, "LatencySimulator:JitterMs must be non-negative.")
+    .Validate(o => o.LossPercent is >= 0 and <= 100,
+        "LatencySimulator:LossPercent must be in [0,100].");
+
 builder.Services.AddOptions<GameAuthOptions>()
     .Bind(builder.Configuration.GetSection(GameAuthOptions.SectionName))
     .Validate(o => !string.IsNullOrWhiteSpace(o.Issuer), "GameAuth:Issuer is required.")
@@ -40,6 +47,18 @@ builder.Services.AddSingleton<IGameJwtValidator, GameJwtValidator>();
 builder.Services.AddSingleton<AuthenticatedPeerRegistry>();
 builder.Services.AddSingleton<GameSessionManager>();
 builder.Services.AddSingleton<AgonesReadinessSignal>();
+
+// Relay sender: pass-through by default, replaced with the delaying impl
+// when the LatencySimulator is enabled. Resolved at startup, not per-send.
+builder.Services.AddSingleton<IRelaySender>(sp =>
+{
+    var simOpts = sp.GetRequiredService<IOptions<LatencySimulatorOptions>>().Value;
+    if (!simOpts.Enabled)
+    {
+        return new PassthroughRelaySender();
+    }
+    return ActivatorUtilities.CreateInstance<DelayingRelaySender>(sp);
+});
 
 builder.Services.AddHttpClient<ILobbiesClient, LobbiesClient>((sp, http) =>
 {

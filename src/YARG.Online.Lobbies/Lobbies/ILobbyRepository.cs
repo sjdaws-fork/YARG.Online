@@ -104,6 +104,10 @@ public enum StartGameOutcome
     AlreadyStarted,
     NotEnoughPlayers,
     QueueEmpty,
+    /// <summary>One or more members are still viewing the post-game results
+    /// screen (or haven't reported back to the lobby yet). The host must
+    /// wait until every member's <c>IsBackInLobby</c> flag is true.</summary>
+    PlayersStillInResults,
 }
 
 public sealed record StartGameMember(string UserId, string DisplayName);
@@ -111,7 +115,7 @@ public sealed record StartGameMember(string UserId, string DisplayName);
 public sealed record BeginStartGameResultData(
     StartGameOutcome Outcome,
     Lobby? Lobby,
-    IReadOnlyList<StartGameMember>? Members);
+    int MemberCount);
 
 public enum ConfirmStartGameOutcome
 {
@@ -120,7 +124,10 @@ public enum ConfirmStartGameOutcome
     NotStarting,
 }
 
-public sealed record ConfirmStartGameResultData(ConfirmStartGameOutcome Outcome, Lobby? Lobby);
+public sealed record ConfirmStartGameResultData(
+    ConfirmStartGameOutcome Outcome,
+    Lobby? Lobby,
+    IReadOnlyList<StartGameMember>? Members);
 
 public enum FinishGameOutcome
 {
@@ -144,14 +151,28 @@ public enum SongStartedOutcome
 
 public sealed record SongStartedResultData(SongStartedOutcome Outcome, Lobby? Lobby);
 
+public enum LeaveResultsOutcome
+{
+    /// <summary>Flag flipped to true; broadcast the event.</summary>
+    MarkedBackInLobby,
+    /// <summary>Already true — caller was never away. Treated as a no-op; no broadcast needed.</summary>
+    AlreadyBackInLobby,
+    NotFound,
+    NotMember,
+}
+
+public sealed record LeaveResultsResultData(LeaveResultsOutcome Outcome, Lobby? Lobby);
+
 public interface ILobbyRepository
 {
     /// <summary>Persist a new lobby with the host's initial song library. Returns false if the slug already exists (rare collision).</summary>
-    Task<bool> CreateAsync(Lobby lobby, IReadOnlyCollection<string> hostLibrary, CancellationToken ct);
+    /// <param name="hostInstrument">Host's selected instrument as a YARG.Core.Instrument byte; echoed back via LobbyMemberDto.</param>
+    Task<bool> CreateAsync(Lobby lobby, IReadOnlyCollection<string> hostLibrary, byte hostInstrument, CancellationToken ct);
 
     Task<Lobby?> GetAsync(string lobbyId, CancellationToken ct);
 
-    Task<JoinResultData> JoinAsync(string lobbyId, string userId, string displayName, IReadOnlyCollection<string> library, CancellationToken ct);
+    /// <param name="instrument">Joiner's selected instrument as a YARG.Core.Instrument byte; echoed back via LobbyMemberDto and PlayerJoinedEvent.</param>
+    Task<JoinResultData> JoinAsync(string lobbyId, string userId, string displayName, IReadOnlyCollection<string> library, byte instrument, CancellationToken ct);
 
     Task<LeaveResult> LeaveAsync(string lobbyId, string userId, CancellationToken ct);
 
@@ -216,9 +237,10 @@ public interface ILobbyRepository
     /// <summary>
     /// Transition the lobby to <see cref="LobbyStatus.Starting"/>. Allowed only when the caller is the
     /// current host, the lobby is currently in <see cref="LobbyStatus.SongSelect"/>, there are at least
-    /// two members, and the song queue is non-empty. On success the returned <see cref="BeginStartGameResultData.Members"/>
-    /// lists every current member (with display name) so the caller can subsequently allocate a game
-    /// server for that many slots and mint per-user tokens. Caller must follow this with either
+    /// two members, and the song queue is non-empty. On success the returned <see cref="BeginStartGameResultData.MemberCount"/>
+    /// gives the current member count so the caller can size the game-server allocation. The authoritative
+    /// member list (for minting per-user tokens) is captured later by <see cref="ConfirmStartGameAsync"/>,
+    /// since membership can shift while the allocator runs. Caller must follow this with either
     /// <see cref="ConfirmStartGameAsync"/> (on allocation success) or <see cref="AbortStartGameAsync"/>
     /// (on allocation failure).
     /// </summary>
@@ -227,7 +249,9 @@ public interface ILobbyRepository
     /// <summary>
     /// Transition the lobby from <see cref="LobbyStatus.Starting"/> to <see cref="LobbyStatus.GameStarted"/>
     /// and store the resolved <paramref name="allocation"/> on the lobby so <see cref="FinishGameAsync"/>
-    /// can surface it for slot release.
+    /// can surface it for slot release. On success the returned <see cref="ConfirmStartGameResultData.Members"/>
+    /// snapshots every current member (with display name) — captured atomically with the GameStarted
+    /// transition — so the caller can mint per-user tokens and bake a consistent quorum count into them.
     /// </summary>
     Task<ConfirmStartGameResultData> ConfirmStartGameAsync(string lobbyId, GameAllocation allocation, CancellationToken ct);
 
@@ -262,4 +286,13 @@ public interface ILobbyRepository
         DateTimeOffset startedAt,
         int durationMs,
         CancellationToken ct);
+
+    /// <summary>
+    /// Mark <paramref name="userId"/> as back in the lobby (the player has
+    /// closed the post-game results screen or otherwise returned to the
+    /// song-select view). The host's StartGame is gated on every member
+    /// being back. Idempotent — repeated calls return
+    /// <see cref="LeaveResultsOutcome.AlreadyBackInLobby"/>.
+    /// </summary>
+    Task<LeaveResultsResultData> LeaveResultsAsync(string lobbyId, string userId, CancellationToken ct);
 }

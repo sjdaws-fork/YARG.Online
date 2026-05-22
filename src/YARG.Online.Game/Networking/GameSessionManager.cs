@@ -21,8 +21,13 @@ public sealed class GameSessionManager
     }
 
     /// <summary>
-    /// Store this peer's loadout selection. First-write-wins per peer. Returns false if no session
-    /// exists for the lobby, the peer isn't connected, or a loadout was already recorded.
+    /// Store this peer's loadout selection. Idempotent per peer — re-submissions
+    /// overwrite the previously-stored loadout (a player may "unready" on the
+    /// DifficultySelect screen and re-Ready with different choices before the
+    /// session starts). Returns false only if no session exists for the lobby
+    /// or the peer isn't connected. Once <see cref="GameSession.Started"/> is
+    /// true, <see cref="TryClaimStart"/> won't re-broadcast, so late re-submissions
+    /// after the game has already begun are silently ignored on the broadcast side.
     /// </summary>
     public bool TryStoreLoadout(
         string lobbyId,
@@ -44,15 +49,40 @@ public sealed class GameSessionManager
                 return false;
             }
 
-            if (!session.Loadouts.TryAdd(peerId, loadout))
-            {
-                return false;
-            }
+            // Upsert — duplicates are not an error, they replace the previous loadout.
+            session.Loadouts[peerId] = loadout;
 
             result = TryClaimStart(session);
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Drop a peer's previously-submitted loadout. Used by DifficultySelect "Unready" so
+    /// the peer can resubmit with new selections. Returns false if the session is missing,
+    /// the peer isn't connected, has no loadout stored, or the game has already started
+    /// (post-start retraction is not allowed — see comment on <see cref="TryStoreLoadout"/>).
+    /// </summary>
+    public bool TryRemoveLoadout(string lobbyId, int peerId)
+    {
+        if (!_sessions.TryGetValue(lobbyId, out var session))
+        {
+            return false;
+        }
+
+        lock (session.Gate)
+        {
+            if (session.Started)
+            {
+                return false;
+            }
+            if (!session.Peers.ContainsKey(peerId))
+            {
+                return false;
+            }
+            return session.Loadouts.Remove(peerId);
+        }
     }
 
     /// <summary>
@@ -230,8 +260,8 @@ public sealed class GameSessionManager
     }
 
     /// <summary>
-    /// Hot-path: called for every EngineInputBatch. Returns true and the list of *other* peers in
-    /// the session (excluding the sender) only when the session is live (GameStartCue broadcast).
+    /// Hot-path: called for every fan-out packet. Returns true and the list of *other* peers
+    /// in the session (excluding the sender) only when the session is live (GameStartCue broadcast).
     /// </summary>
     public bool TryGetFanoutTargets(int senderPeerId, out IReadOnlyList<NetPeer> targets)
     {
@@ -322,6 +352,35 @@ public sealed class GameSessionManager
             && session.Peers.Count >= session.ExpectedMembers
             && session.Loadouts.Count >= session.ExpectedMembers)
         {
+            // Gate: every peer must have submitted the same chart hash, and
+            // it must not be all-zero ("not supplied"). Mismatch is fatal for
+            // the session — note-index events would refer to different notes
+            // on different clients, silently desyncing the prediction layer.
+            byte[]? reference = null;
+            foreach (var loadout in session.Loadouts.Values)
+            {
+                if (IsAllZero(loadout.ChartHash))
+                {
+                    session.Started = true; // claim once so we don't loop forever
+                    return new TryStartResult(
+                        ReadyToStart: false,
+                        Peers: Array.Empty<PeerSession>(),
+                        ChartMismatch: true);
+                }
+                if (reference is null)
+                {
+                    reference = loadout.ChartHash;
+                }
+                else if (!HashesEqual(reference, loadout.ChartHash))
+                {
+                    session.Started = true;
+                    return new TryStartResult(
+                        ReadyToStart: false,
+                        Peers: Array.Empty<PeerSession>(),
+                        ChartMismatch: true);
+                }
+            }
+
             session.Started = true;
             var peerLoadouts = new PeerSession[session.Peers.Count];
             int i = 0;
@@ -336,6 +395,25 @@ public sealed class GameSessionManager
         }
 
         return new TryStartResult(ReadyToStart: false, Array.Empty<PeerSession>());
+    }
+
+    private static bool IsAllZero(byte[] bytes)
+    {
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            if (bytes[i] != 0) return false;
+        }
+        return true;
+    }
+
+    private static bool HashesEqual(byte[] a, byte[] b)
+    {
+        if (a.Length != b.Length) return false;
+        for (int i = 0; i < a.Length; i++)
+        {
+            if (a[i] != b[i]) return false;
+        }
+        return true;
     }
 
     private static IReadOnlyList<NetPeer> SnapshotPeers(GameSession session)
@@ -378,7 +456,10 @@ public sealed class GameSessionManager
 
 public readonly record struct PeerSession(int PeerId, NetPeer Peer, SetLoadoutPacket Loadout);
 
-public readonly record struct TryStartResult(bool ReadyToStart, IReadOnlyList<PeerSession> Peers);
+public readonly record struct TryStartResult(
+    bool ReadyToStart,
+    IReadOnlyList<PeerSession> Peers,
+    bool ChartMismatch = false);
 
 public readonly record struct CueReadyResult(bool ReadyToCue, IReadOnlyList<NetPeer> Peers);
 

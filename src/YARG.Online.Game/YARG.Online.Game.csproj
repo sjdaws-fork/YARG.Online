@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\YARG.Online.Game.Contracts\YARG.Online.Game.Contracts.csproj" />
+    <ProjectReference Include="..\..\libraries\YARG.Core\YARG.Core\YARG.Core.csproj" />
   </ItemGroup>
 
 </Project>
