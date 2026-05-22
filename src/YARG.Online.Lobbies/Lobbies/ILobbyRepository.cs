@@ -137,13 +137,23 @@ public enum LeaveResultsOutcome
 {
     /// <summary>Flag flipped to true; broadcast the event.</summary>
     MarkedBackInLobby,
+    /// <summary>Flag flipped to true AND this was the last member to come
+    /// back, so the lobby has been transitioned out of <see cref="LobbyStatus.GameStarted"/>
+    /// back to <see cref="LobbyStatus.SongSelect"/>. Caller must broadcast
+    /// both <c>OnPlayerLobbyReadyChanged</c> and <c>OnLobbyStatusChanged</c>.
+    /// Used when every player bails early (via the in-game Quit button)
+    /// before <c>FinishGameAsync</c> would have transitioned the lobby on
+    /// its own — without this path, the lobby would stay stuck in
+    /// GameStarted and the host's Start button would say "song already
+    /// active" for the next song.</summary>
+    MarkedBackInLobbyAndGameEnded,
     /// <summary>Already true — caller was never away. Treated as a no-op; no broadcast needed.</summary>
     AlreadyBackInLobby,
     NotFound,
     NotMember,
 }
 
-public sealed record LeaveResultsResultData(LeaveResultsOutcome Outcome, Lobby? Lobby);
+public sealed record LeaveResultsResultData(LeaveResultsOutcome Outcome, Lobby? Lobby, QueuedSong? AbandonedSong);
 
 public interface ILobbyRepository
 {

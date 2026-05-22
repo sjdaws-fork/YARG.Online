@@ -690,23 +690,72 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
 
         if (!_entries.TryGetValue(lobbyId, out var entry))
         {
-            return Task.FromResult(new LeaveResultsResultData(LeaveResultsOutcome.NotFound, null));
+            return Task.FromResult(new LeaveResultsResultData(LeaveResultsOutcome.NotFound, null, null));
         }
 
         lock (entry.Lock)
         {
             if (!entry.Members.Contains(userId))
             {
-                return Task.FromResult(new LeaveResultsResultData(LeaveResultsOutcome.NotMember, null));
+                return Task.FromResult(new LeaveResultsResultData(LeaveResultsOutcome.NotMember, null, null));
             }
 
             if (entry.IsBackInLobby.TryGetValue(userId, out var already) && already)
             {
-                return Task.FromResult(new LeaveResultsResultData(LeaveResultsOutcome.AlreadyBackInLobby, entry.Lobby));
+                return Task.FromResult(new LeaveResultsResultData(LeaveResultsOutcome.AlreadyBackInLobby, entry.Lobby, null));
             }
 
             entry.IsBackInLobby[userId] = true;
-            return Task.FromResult(new LeaveResultsResultData(LeaveResultsOutcome.MarkedBackInLobby, entry.Lobby));
+
+            // If the lobby is mid-song AND every member has now reported
+            // back, transition the lobby out of GameStarted. Without this
+            // step the lobby stays in GameStarted forever after everyone
+            // bails early (the in-game Quit button drives this code path
+            // via LobbyHubSession.LeaveCurrentGame), and the host's Start
+            // button reports "song still active" for the next round even
+            // though no one is actually playing.
+            //
+            // Mirrors FinishGameAsync: pop the head of the queue (the song
+            // that was being played) and clear runtime fields. The queue
+            // could be empty if a member-departure cascade purged it
+            // during gameplay; in that case AbandonedSong is null but the
+            // status transition still runs.
+            if (entry.Lobby.Status == LobbyStatus.GameStarted)
+            {
+                bool allBack = true;
+                foreach (var memberId in entry.JoinOrder)
+                {
+                    if (!entry.IsBackInLobby.TryGetValue(memberId, out var ready) || !ready)
+                    {
+                        allBack = false;
+                        break;
+                    }
+                }
+
+                if (allBack)
+                {
+                    QueuedSong? abandoned = null;
+                    if (entry.SongQueue.Count > 0)
+                    {
+                        abandoned = entry.SongQueue[0];
+                        entry.SongQueue.RemoveAt(0);
+                    }
+
+                    entry.Lobby = entry.Lobby with
+                    {
+                        Status = LobbyStatus.SongSelect,
+                        SongStartedAt = null,
+                        SongDurationMs = null,
+                    };
+
+                    return Task.FromResult(new LeaveResultsResultData(
+                        LeaveResultsOutcome.MarkedBackInLobbyAndGameEnded,
+                        entry.Lobby,
+                        abandoned));
+                }
+            }
+
+            return Task.FromResult(new LeaveResultsResultData(LeaveResultsOutcome.MarkedBackInLobby, entry.Lobby, null));
         }
     }
 

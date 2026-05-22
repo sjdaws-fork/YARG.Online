@@ -23,4 +23,7 @@ public enum PacketOpcode : byte
     // interpolate between samples. Fan-out only — server treats it like Whammy.
     VocalPitch = 21,
     EngineStateSnapshot = 23,
+    // Raw input fan-out for free-play sections (BRE / drum activator fills)
+    // — drives remote pad/fret flashes that would otherwise be silent.
+    FreePlayInput = 24,
 }

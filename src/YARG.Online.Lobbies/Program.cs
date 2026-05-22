@@ -5,6 +5,7 @@ using System.Threading.RateLimiting;
 using FluentValidation;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http.Connections;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
@@ -200,7 +201,16 @@ app.MapOpenApi("/openapi/v1.json");
 app.MapAuthEndpoints(app.Environment);
 app.MapGameLifecycleEndpoints();
 
-app.MapHub<LobbyHub>(HubRoutes.Lobby).RequireAuthorization();
+// Restrict the hub to WebSockets only — no Server-Sent-Events / long-polling
+// fallbacks. This pairs with the client's SkipNegotiation + WebSockets
+// transport setting to eliminate sticky-session affinity entirely: every
+// connection is a single persistent WebSocket from the first byte, so a
+// load balancer can round-robin across backend nodes without breaking
+// ongoing connections.
+app.MapHub<LobbyHub>(HubRoutes.Lobby, options =>
+{
+    options.Transports = HttpTransportType.WebSockets;
+}).RequireAuthorization();
 
 app.MapGet("/", () => Results.Redirect("/openapi/v1.json")).ExcludeFromDescription();
 
