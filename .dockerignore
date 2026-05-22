@@ -20,7 +20,5 @@ src/**/charts/
 src/**/Dockerfile
 src/YARG.Online.Game.Contracts - Copy/
 
-# Test projects: keep each .csproj (restore stage COPYs them) but drop the
-# source so editing tests does not rebuild the production images.
+# Test projects: not needed to build the production images.
 src/**/*Tests/
-!src/**/*Tests/*.csproj

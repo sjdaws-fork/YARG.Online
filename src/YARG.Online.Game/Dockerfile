@@ -5,11 +5,8 @@ WORKDIR /src
 COPY global.json ./
 COPY src/YARG.Online.Lobbies/YARG.Online.Lobbies.csproj                   src/YARG.Online.Lobbies/
 COPY src/YARG.Online.Lobbies.Contracts/YARG.Online.Lobbies.Contracts.csproj src/YARG.Online.Lobbies.Contracts/
-COPY src/YARG.Online.Lobbies.Tests/YARG.Online.Lobbies.Tests.csproj         src/YARG.Online.Lobbies.Tests/
 COPY src/YARG.Online.Game/YARG.Online.Game.csproj                          src/YARG.Online.Game/
 COPY src/YARG.Online.Game.Contracts/YARG.Online.Game.Contracts.csproj      src/YARG.Online.Game.Contracts/
-COPY src/YARG.Online.Game.Tests/YARG.Online.Game.Tests.csproj              src/YARG.Online.Game.Tests/
-COPY src/YARG.Online.E2E.Tests/YARG.Online.E2E.Tests.csproj                src/YARG.Online.E2E.Tests/
 RUN dotnet restore src/YARG.Online.Game/YARG.Online.Game.csproj
 
 FROM restore AS build
