@@ -35,7 +35,6 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
     private readonly IMapper _mapper;
     private readonly LobbyOptions _options;
     private readonly IGameAllocator _allocator;
-    private readonly string _gameServerConnectionKey;
     private readonly TimeProvider _clock;
     private readonly ILogger<LobbyHub> _logger;
 
@@ -53,7 +52,6 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
         IGameJwtTokenService gameJwt,
         IMapper mapper,
         IOptions<LobbyOptions> options,
-        IOptions<GameServerOptions> gameServerOptions,
         IGameAllocator allocator,
         TimeProvider clock,
         ILogger<LobbyHub> logger)
@@ -72,7 +70,6 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
         _mapper = mapper;
         _options = options.Value;
         _allocator = allocator;
-        _gameServerConnectionKey = gameServerOptions.Value.ConnectionKey;
         _clock = clock;
         _logger = logger;
     }
@@ -627,7 +624,6 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
                     .OnGameStarted(new GameStartedEvent(
                         lobbyId,
                         allocation.Endpoint,
-                        _gameServerConnectionKey,
                         issued.Token,
                         issued.ExpiresAt));
                 dispatches++;

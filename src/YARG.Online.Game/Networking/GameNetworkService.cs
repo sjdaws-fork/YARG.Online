@@ -115,24 +115,15 @@ public sealed class GameNetworkService : BackgroundService
             return;
         }
 
-        string? key;
         string? jwt;
         try
         {
-            key = request.Data.GetString(64);
             jwt = request.Data.GetString(4096);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(
                 ex, "Rejected {Endpoint}: malformed handshake payload.", request.RemoteEndPoint);
-            request.Reject();
-            return;
-        }
-
-        if (!string.Equals(key, _options.ConnectionKey, StringComparison.Ordinal))
-        {
-            _logger.LogWarning("Rejected {Endpoint}: bad connection key.", request.RemoteEndPoint);
             request.Reject();
             return;
         }

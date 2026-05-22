@@ -8,4 +8,3 @@ secrets:
   GameAuth__Audience: yarg-online-game-dev
   GameAuth__SigningSecret: dev-only-game-secret-do-not-use-in-prod-32b+++
   GameServer__Endpoint: localhost:9050
-  GameServer__ConnectionKey: yarg-online-game-dev

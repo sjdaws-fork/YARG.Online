@@ -51,8 +51,8 @@ builder.Services.AddOptions<LobbyOptions>()
     .Bind(builder.Configuration.GetSection(LobbyOptions.SectionName));
 
 // In-cluster lobby pods talk to Agones for capacity-aware allocation; out-of-cluster
-// (local dev) just reuses a static endpoint. The ConnectionKey lives in lobby config
-// in both cases — the allocator is only responsible for the endpoint.
+// (local dev) just reuses a static endpoint. The allocator is only responsible
+// for the endpoint.
 if (KubernetesClientConfiguration.IsInCluster())
 {
     builder.Services.AddOptions<AgonesOptions>()
@@ -63,9 +63,7 @@ if (KubernetesClientConfiguration.IsInCluster())
         .ValidateOnStart();
 
     builder.Services.AddOptions<GameServerOptions>()
-        .Bind(builder.Configuration.GetSection(GameServerOptions.SectionName))
-        .Validate(o => !string.IsNullOrWhiteSpace(o.ConnectionKey), "GameServer:ConnectionKey is required.")
-        .ValidateOnStart();
+        .Bind(builder.Configuration.GetSection(GameServerOptions.SectionName));
 
     builder.Services.AddSingleton<IKubernetes>(_ =>
         new Kubernetes(KubernetesClientConfiguration.InClusterConfig()));
@@ -79,7 +77,6 @@ else
         .Validate(o => !string.IsNullOrWhiteSpace(o.Endpoint), "GameServer:Endpoint is required.")
         .Validate(o => string.IsNullOrEmpty(o.Endpoint) || o.Endpoint.Contains(':'),
             "GameServer:Endpoint must be in 'host:port' form.")
-        .Validate(o => !string.IsNullOrWhiteSpace(o.ConnectionKey), "GameServer:ConnectionKey is required.")
         .ValidateOnStart();
 
     builder.Services.AddSingleton<IGameAllocator, StaticGameAllocator>();

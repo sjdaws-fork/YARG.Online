@@ -45,7 +45,5 @@ autoscaler:
 
 # Populated by values.local.yaml (gitignored). Each key/value is rendered into
 # a Secret consumed by the game container via envFrom. The keys must match the
-# lobby's GameAuth__* values and Network__ConnectionKey must equal the lobby's
-# GameServer__ConnectionKey — JWT validation and the LiteNetLib handshake key
-# both fail silently on mismatch.
+# lobby's GameAuth__* values — JWT validation fails silently on mismatch.
 secrets: {}

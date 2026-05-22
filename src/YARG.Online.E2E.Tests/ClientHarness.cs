@@ -13,14 +13,14 @@ internal sealed class ClientHarness
     private readonly Queue<(string LobbyId, string UserId, string DisplayName)> _joins = new();
     private readonly Queue<(string LobbyId, QueuedSongDto Song)> _songsQueued = new();
     private readonly Queue<(string LobbyId, long Sequence, SongRemovalReason Reason)> _songsRemoved = new();
-    private readonly Queue<(string LobbyId, string Endpoint, string ConnectionKey, string GameToken, DateTimeOffset ExpiresAt)> _gameStarteds = new();
+    private readonly Queue<(string LobbyId, string Endpoint, string GameToken, DateTimeOffset ExpiresAt)> _gameStarteds = new();
     private readonly Queue<(string LobbyId, LobbyStatus Status)> _statusChanges = new();
 
     private TaskCompletionSource<LobbyDto[]>? _snapshotWaiter;
     private TaskCompletionSource<(string, string, string)>? _joinWaiter;
     private TaskCompletionSource<(string LobbyId, QueuedSongDto Song)>? _songQueuedWaiter;
     private TaskCompletionSource<(string LobbyId, long Sequence, SongRemovalReason Reason)>? _songRemovedWaiter;
-    private TaskCompletionSource<(string LobbyId, string Endpoint, string ConnectionKey, string GameToken, DateTimeOffset ExpiresAt)>? _gameStartedWaiter;
+    private TaskCompletionSource<(string LobbyId, string Endpoint, string GameToken, DateTimeOffset ExpiresAt)>? _gameStartedWaiter;
     private TaskCompletionSource<(string LobbyId, LobbyStatus Status)>? _statusChangedWaiter;
 
     private readonly object _lock = new();
@@ -35,7 +35,7 @@ internal sealed class ClientHarness
         conn.On<SongRemovedFromQueueEvent>("OnSongRemovedFromQueue", e =>
             Push((e.LobbyId, e.Sequence, e.Reason), _songsRemoved, ref _songRemovedWaiter));
         conn.On<GameStartedEvent>("OnGameStarted", e =>
-            Push((e.LobbyId, e.GameServerEndpoint, e.ConnectionKey, e.GameToken, e.ExpiresAt), _gameStarteds, ref _gameStartedWaiter));
+            Push((e.LobbyId, e.GameServerEndpoint, e.GameToken, e.ExpiresAt), _gameStarteds, ref _gameStartedWaiter));
         conn.On<LobbyStatusChangedEvent>("OnLobbyStatusChanged", e =>
             Push((e.LobbyId, e.Status), _statusChanges, ref _statusChangedWaiter));
     }
@@ -51,7 +51,7 @@ internal sealed class ClientHarness
     public Task<(string LobbyId, long Sequence, SongRemovalReason Reason)> NextSongRemoved() =>
         Pull(_songsRemoved, ref _songRemovedWaiter);
 
-    public Task<(string LobbyId, string Endpoint, string ConnectionKey, string GameToken, DateTimeOffset ExpiresAt)> NextGameStarted() =>
+    public Task<(string LobbyId, string Endpoint, string GameToken, DateTimeOffset ExpiresAt)> NextGameStarted() =>
         Pull(_gameStarteds, ref _gameStartedWaiter);
 
     public Task<(string LobbyId, LobbyStatus Status)> NextStatusChanged() =>

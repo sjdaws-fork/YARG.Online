@@ -69,8 +69,6 @@ public class FullFlowE2ETests : IClassFixture<E2EFixture>
         Assert.Equal(created.Lobby.Id, aliceStart.LobbyId);
         Assert.Equal(created.Lobby.Id, bobStart.LobbyId);
         Assert.Equal($"127.0.0.1:{_fixture.GameEndpoint.Port}", aliceStart.Endpoint);
-        Assert.Equal(E2EFixture.ConnectionKey, aliceStart.ConnectionKey);
-        Assert.Equal(E2EFixture.ConnectionKey, bobStart.ConnectionKey);
 
         var aliceStatus = await alice.NextStatusChanged();
         var bobStatus = await bob.NextStatusChanged();
@@ -85,9 +83,9 @@ public class FullFlowE2ETests : IClassFixture<E2EFixture>
         await using var bobUdp = new UdpGameClient();
 
         Assert.Equal(HandshakeOutcome.Connected,
-            await aliceUdp.ConnectAsync(_fixture.GameEndpoint, aliceStart.ConnectionKey, aliceStart.GameToken));
+            await aliceUdp.ConnectAsync(_fixture.GameEndpoint, aliceStart.GameToken));
         Assert.Equal(HandshakeOutcome.Connected,
-            await bobUdp.ConnectAsync(_fixture.GameEndpoint, bobStart.ConnectionKey, bobStart.GameToken));
+            await bobUdp.ConnectAsync(_fixture.GameEndpoint, bobStart.GameToken));
 
         // GameStart now fires on quorum + per-peer loadouts. No chart upload step.
         aliceUdp.SendLoadout(InstrumentId.FiveFretGuitar, DifficultyId.Expert);

@@ -18,7 +18,6 @@ namespace YARG.Online.Game.Tests.Networking;
 
 public class GameNetworkServiceIntegrationTests : IAsyncLifetime
 {
-    private const string ConnectionKey = "yarg-online-game-test";
     private static readonly TimeSpan WaitTimeout = TimeSpan.FromSeconds(5);
 
     private IHost _host = null!;
@@ -50,7 +49,6 @@ public class GameNetworkServiceIntegrationTests : IAsyncLifetime
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["Network:Port"] = _serverPort.ToString(),
-            ["Network:ConnectionKey"] = ConnectionKey,
             ["Network:MaxConnections"] = maxConnections.ToString(),
             ["GameAuth:Issuer"] = TestJwt.DefaultIssuer,
             ["GameAuth:Audience"] = TestJwt.DefaultAudience,
@@ -90,7 +88,7 @@ public class GameNetworkServiceIntegrationTests : IAsyncLifetime
         var token = TestJwt.Mint(userId: "u_alice", displayName: "Alice", expectedMembers: 99);
         await using var client = new TestClient();
 
-        var outcome = await client.ConnectAndWait(_serverPort, ConnectionKey, token);
+        var outcome = await client.ConnectAndWait(_serverPort, token);
 
         Assert.Equal(HandshakeOutcome.Connected, outcome);
         await WaitForAsync(() => _registry.Count == 1);
@@ -101,24 +99,12 @@ public class GameNetworkServiceIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Wrong_connection_key_is_rejected()
-    {
-        var token = TestJwt.Mint();
-        await using var client = new TestClient();
-
-        var outcome = await client.ConnectAndWait(_serverPort, "wrong-key", token);
-
-        Assert.Equal(HandshakeOutcome.Rejected, outcome);
-        Assert.Equal(0, _registry.Count);
-    }
-
-    [Fact]
     public async Task Token_with_wrong_audience_is_rejected()
     {
         var token = TestJwt.Mint(audience: "yarg-api");
         await using var client = new TestClient();
 
-        var outcome = await client.ConnectAndWait(_serverPort, ConnectionKey, token);
+        var outcome = await client.ConnectAndWait(_serverPort, token);
 
         Assert.Equal(HandshakeOutcome.Rejected, outcome);
         Assert.Equal(0, _registry.Count);
@@ -130,7 +116,7 @@ public class GameNetworkServiceIntegrationTests : IAsyncLifetime
         var token = TestJwt.Mint(issuer: "evil-issuer");
         await using var client = new TestClient();
 
-        var outcome = await client.ConnectAndWait(_serverPort, ConnectionKey, token);
+        var outcome = await client.ConnectAndWait(_serverPort, token);
 
         Assert.Equal(HandshakeOutcome.Rejected, outcome);
         Assert.Equal(0, _registry.Count);
@@ -144,7 +130,7 @@ public class GameNetworkServiceIntegrationTests : IAsyncLifetime
             lifetime: TimeSpan.FromMinutes(5));
         await using var client = new TestClient();
 
-        var outcome = await client.ConnectAndWait(_serverPort, ConnectionKey, token);
+        var outcome = await client.ConnectAndWait(_serverPort, token);
 
         Assert.Equal(HandshakeOutcome.Rejected, outcome);
         Assert.Equal(0, _registry.Count);
@@ -156,7 +142,7 @@ public class GameNetworkServiceIntegrationTests : IAsyncLifetime
         var token = TestJwt.Mint(secret: "a-completely-different-secret-32-bytes!!");
         await using var client = new TestClient();
 
-        var outcome = await client.ConnectAndWait(_serverPort, ConnectionKey, token);
+        var outcome = await client.ConnectAndWait(_serverPort, token);
 
         Assert.Equal(HandshakeOutcome.Rejected, outcome);
         Assert.Equal(0, _registry.Count);
@@ -171,12 +157,12 @@ public class GameNetworkServiceIntegrationTests : IAsyncLifetime
         var token2 = TestJwt.Mint(userId: "u_bob", expectedMembers: 99);
 
         await using var client1 = new TestClient();
-        var outcome1 = await client1.ConnectAndWait(_serverPort, ConnectionKey, token1);
+        var outcome1 = await client1.ConnectAndWait(_serverPort, token1);
         Assert.Equal(HandshakeOutcome.Connected, outcome1);
         await WaitForAsync(() => _registry.Count == 1);
 
         await using var client2 = new TestClient();
-        var outcome2 = await client2.ConnectAndWait(_serverPort, ConnectionKey, token2);
+        var outcome2 = await client2.ConnectAndWait(_serverPort, token2);
 
         Assert.Equal(HandshakeOutcome.Rejected, outcome2);
         Assert.Equal(1, _registry.Count);
@@ -193,8 +179,8 @@ public class GameNetworkServiceIntegrationTests : IAsyncLifetime
         await using var host = new TestClient();
         await using var other = new TestClient();
 
-        Assert.Equal(HandshakeOutcome.Connected, await host.ConnectAndWait(_serverPort, ConnectionKey, hostToken));
-        Assert.Equal(HandshakeOutcome.Connected, await other.ConnectAndWait(_serverPort, ConnectionKey, clientToken));
+        Assert.Equal(HandshakeOutcome.Connected, await host.ConnectAndWait(_serverPort, hostToken));
+        Assert.Equal(HandshakeOutcome.Connected, await other.ConnectAndWait(_serverPort, clientToken));
 
         host.SendLoadout();
         other.SendLoadout();
@@ -222,8 +208,8 @@ public class GameNetworkServiceIntegrationTests : IAsyncLifetime
         await using var host = new TestClient();
         await using var other = new TestClient();
 
-        Assert.Equal(HandshakeOutcome.Connected, await host.ConnectAndWait(_serverPort, ConnectionKey, hostToken));
-        Assert.Equal(HandshakeOutcome.Connected, await other.ConnectAndWait(_serverPort, ConnectionKey, clientToken));
+        Assert.Equal(HandshakeOutcome.Connected, await host.ConnectAndWait(_serverPort, hostToken));
+        Assert.Equal(HandshakeOutcome.Connected, await other.ConnectAndWait(_serverPort, clientToken));
 
         host.SendLoadout();
         other.SendLoadout();
@@ -242,7 +228,7 @@ public class GameNetworkServiceIntegrationTests : IAsyncLifetime
         var token = TestJwt.Mint(userId: "u_alice", lobbyId: "lob_lonely", expectedMembers: 2, isHost: true);
 
         await using var client = new TestClient();
-        Assert.Equal(HandshakeOutcome.Connected, await client.ConnectAndWait(_serverPort, ConnectionKey, token));
+        Assert.Equal(HandshakeOutcome.Connected, await client.ConnectAndWait(_serverPort, token));
 
         // Pre-quorum sessions should never broadcast — give the server a generous window to misbehave.
         await Task.Delay(300);
@@ -260,8 +246,8 @@ public class GameNetworkServiceIntegrationTests : IAsyncLifetime
         await using var host = new TestClient();
         await using var other = new TestClient();
 
-        Assert.Equal(HandshakeOutcome.Connected, await host.ConnectAndWait(_serverPort, ConnectionKey, hostToken));
-        Assert.Equal(HandshakeOutcome.Connected, await other.ConnectAndWait(_serverPort, ConnectionKey, clientToken));
+        Assert.Equal(HandshakeOutcome.Connected, await host.ConnectAndWait(_serverPort, hostToken));
+        Assert.Equal(HandshakeOutcome.Connected, await other.ConnectAndWait(_serverPort, clientToken));
 
         host.SendLoadout();
         // Bob never sends a loadout — server should hold the broadcast.
@@ -455,8 +441,8 @@ public class GameNetworkServiceIntegrationTests : IAsyncLifetime
         var host = new TestClient();
         var other = new TestClient();
 
-        Assert.Equal(HandshakeOutcome.Connected, await host.ConnectAndWait(_serverPort, ConnectionKey, hostToken));
-        Assert.Equal(HandshakeOutcome.Connected, await other.ConnectAndWait(_serverPort, ConnectionKey, clientToken));
+        Assert.Equal(HandshakeOutcome.Connected, await host.ConnectAndWait(_serverPort, hostToken));
+        Assert.Equal(HandshakeOutcome.Connected, await other.ConnectAndWait(_serverPort, clientToken));
 
         host.SendLoadout();
         other.SendLoadout();
@@ -617,7 +603,7 @@ public class GameNetworkServiceIntegrationTests : IAsyncLifetime
             }
         }
 
-        public async Task<HandshakeOutcome> ConnectAndWait(int port, string connectionKey, string jwt)
+        public async Task<HandshakeOutcome> ConnectAndWait(int port, string jwt)
         {
             if (!_manager.Start())
             {
@@ -638,7 +624,6 @@ public class GameNetworkServiceIntegrationTests : IAsyncLifetime
             });
 
             var writer = new NetDataWriter();
-            writer.Put(connectionKey);
             writer.Put(jwt);
             _manager.Connect(new IPEndPoint(IPAddress.Loopback, port), writer);
 

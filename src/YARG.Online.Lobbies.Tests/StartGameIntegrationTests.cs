@@ -24,7 +24,6 @@ public class StartGameIntegrationTests : IClassFixture<StartGameIntegrationTests
     private const string GameIssuer = "yarg-server-browser";
     private const string GameAudience = "yarg-game";
     private const string GameServerEndpoint = "127.0.0.1:9050";
-    private const string GameServerConnectionKey = "yarg-online-game-test-key";
     private const string Hash1 = "0000000000000000000000000000000000000001";
 
     private static readonly TimeSpan WaitTimeout = TimeSpan.FromSeconds(5);
@@ -49,7 +48,6 @@ public class StartGameIntegrationTests : IClassFixture<StartGameIntegrationTests
                     ["GameAuth:Audience"] = GameAudience,
                     ["GameAuth:SigningSecret"] = GameSecret,
                     ["GameServer:Endpoint"] = GameServerEndpoint,
-                    ["GameServer:ConnectionKey"] = GameServerConnectionKey,
                 });
             });
         }
@@ -102,8 +100,6 @@ public class StartGameIntegrationTests : IClassFixture<StartGameIntegrationTests
         Assert.Equal(created.Lobby.Id, bobStart.LobbyId);
         Assert.Equal(GameServerEndpoint, aliceStart.Endpoint);
         Assert.Equal(GameServerEndpoint, bobStart.Endpoint);
-        Assert.Equal(GameServerConnectionKey, aliceStart.ConnectionKey);
-        Assert.Equal(GameServerConnectionKey, bobStart.ConnectionKey);
         Assert.NotEqual(aliceStart.GameToken, bobStart.GameToken);
 
         AssertGameToken(aliceStart.GameToken, expectedSub: aliceId, expectedName: "alice", expectedLobbyId: created.Lobby.Id, expectedMembers: 2);
@@ -357,14 +353,14 @@ public class StartGameIntegrationTests : IClassFixture<StartGameIntegrationTests
         private readonly Queue<(string LobbyId, string UserId, string DisplayName)> _joins = new();
         private readonly Queue<(string LobbyId, QueuedSongDto Song)> _songsQueued = new();
         private readonly Queue<(string LobbyId, long Sequence, SongRemovalReason Reason)> _songsRemoved = new();
-        private readonly Queue<(string LobbyId, string Endpoint, string ConnectionKey, string GameToken, DateTimeOffset ExpiresAt)> _gameStarteds = new();
+        private readonly Queue<(string LobbyId, string Endpoint, string GameToken, DateTimeOffset ExpiresAt)> _gameStarteds = new();
         private readonly Queue<(string LobbyId, LobbyStatus Status)> _statusChanges = new();
 
         private TaskCompletionSource<LobbyDto[]>? _snapshotWaiter;
         private TaskCompletionSource<(string, string, string)>? _joinWaiter;
         private TaskCompletionSource<(string LobbyId, QueuedSongDto Song)>? _songQueuedWaiter;
         private TaskCompletionSource<(string LobbyId, long Sequence, SongRemovalReason Reason)>? _songRemovedWaiter;
-        private TaskCompletionSource<(string LobbyId, string Endpoint, string ConnectionKey, string GameToken, DateTimeOffset ExpiresAt)>? _gameStartedWaiter;
+        private TaskCompletionSource<(string LobbyId, string Endpoint, string GameToken, DateTimeOffset ExpiresAt)>? _gameStartedWaiter;
         private TaskCompletionSource<(string LobbyId, LobbyStatus Status)>? _statusChangedWaiter;
 
         private readonly object _lock = new();
@@ -379,7 +375,7 @@ public class StartGameIntegrationTests : IClassFixture<StartGameIntegrationTests
             conn.On<SongRemovedFromQueueEvent>("OnSongRemovedFromQueue", e =>
                 Push((e.LobbyId, e.Sequence, e.Reason), _songsRemoved, ref _songRemovedWaiter));
             conn.On<GameStartedEvent>("OnGameStarted", e =>
-                Push((e.LobbyId, e.GameServerEndpoint, e.ConnectionKey, e.GameToken, e.ExpiresAt), _gameStarteds, ref _gameStartedWaiter));
+                Push((e.LobbyId, e.GameServerEndpoint, e.GameToken, e.ExpiresAt), _gameStarteds, ref _gameStartedWaiter));
             conn.On<LobbyStatusChangedEvent>("OnLobbyStatusChanged", e =>
                 Push((e.LobbyId, e.Status), _statusChanges, ref _statusChangedWaiter));
         }
@@ -388,7 +384,7 @@ public class StartGameIntegrationTests : IClassFixture<StartGameIntegrationTests
         public Task<(string LobbyId, string UserId, string DisplayName)> NextPlayerJoined() => Pull(_joins, ref _joinWaiter);
         public Task<(string LobbyId, QueuedSongDto Song)> NextSongQueued() => Pull(_songsQueued, ref _songQueuedWaiter);
         public Task<(string LobbyId, long Sequence, SongRemovalReason Reason)> NextSongRemoved() => Pull(_songsRemoved, ref _songRemovedWaiter);
-        public Task<(string LobbyId, string Endpoint, string ConnectionKey, string GameToken, DateTimeOffset ExpiresAt)> NextGameStarted() => Pull(_gameStarteds, ref _gameStartedWaiter);
+        public Task<(string LobbyId, string Endpoint, string GameToken, DateTimeOffset ExpiresAt)> NextGameStarted() => Pull(_gameStarteds, ref _gameStartedWaiter);
         public Task<(string LobbyId, LobbyStatus Status)> NextStatusChanged() => Pull(_statusChanges, ref _statusChangedWaiter);
 
         private void Push<T>(T value, Queue<T> queue, ref TaskCompletionSource<T>? slot)

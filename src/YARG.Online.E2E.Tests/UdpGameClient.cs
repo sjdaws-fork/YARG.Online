@@ -50,7 +50,7 @@ internal sealed class UdpGameClient : IAsyncDisposable
 
     public NetPeer? ServerPeer { get; private set; }
 
-    public async Task<HandshakeOutcome> ConnectAsync(IPEndPoint endpoint, string connectionKey, string jwt)
+    public async Task<HandshakeOutcome> ConnectAsync(IPEndPoint endpoint, string jwt)
     {
         if (!_manager.Start())
         {
@@ -71,12 +71,23 @@ internal sealed class UdpGameClient : IAsyncDisposable
         });
 
         var writer = new NetDataWriter();
-        writer.Put(connectionKey);
         writer.Put(jwt);
         _manager.Connect(endpoint, writer);
 
         var completed = await Task.WhenAny(_outcome.Task, Task.Delay(ConnectTimeout));
         return completed == _outcome.Task ? _outcome.Task.Result : HandshakeOutcome.TimedOut;
+    }
+
+    // Shared non-zero chart hash. The server treats an all-zero ChartHash as
+    // "client supplied no hash" and aborts the session, so every peer must
+    // send the same non-zero hash for the chart-match gate to pass.
+    private static readonly byte[] DefaultChartHash = MakeChartHash(0x11);
+
+    private static byte[] MakeChartHash(byte fill)
+    {
+        var hash = new byte[SetLoadoutPacket.ChartHashLength];
+        Array.Fill(hash, fill);
+        return hash;
     }
 
     public void SendLoadout(InstrumentId instrument, DifficultyId difficulty, Guid enginePreset = default)
@@ -92,6 +103,7 @@ internal sealed class UdpGameClient : IAsyncDisposable
             Instrument = instrument,
             Difficulty = difficulty,
             EnginePreset = enginePreset,
+            ChartHash = DefaultChartHash,
         });
         ServerPeer.Send(writer, DeliveryMethod.ReliableOrdered);
     }

@@ -7,12 +7,10 @@
 .DESCRIPTION
     Writes values.oci-prod.secrets.yaml for both the lobbies and game charts.
 
-    The values shared between the two services -- the GameAuth JWT signing secret
-    and the game connection key -- are generated once and written to both files
-    under the per-chart key names (the lobby calls it GameServer__ConnectionKey,
-    the game calls it Network__ConnectionKey), so the two charts can never drift
-    out of sync. JWT validation and the LiteNetLib handshake both fail silently
-    on a mismatch, so a single generation step is the point of this script.
+    The GameAuth JWT signing secret is shared between the two services: it is
+    generated once and written to both files, so the two charts can never drift
+    out of sync. JWT validation fails silently on a mismatch, so a single
+    generation step is the point of this script.
 
     The oci-prod Skaffold profile already lists both files under each release's
     valuesFiles, so `skaffold run -p oci-prod` picks them up automatically.
@@ -48,9 +46,8 @@ function New-Secret([int] $bytes = 32) {
     [Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes($bytes))
 }
 
-# --- secrets shared between both charts (must be byte-identical) ---
+# --- secret shared between both charts (must be byte-identical) ---
 $gameAuthSigningSecret = New-Secret
-$connectionKey         = New-Secret 24
 
 # --- lobby-only secret (player-facing auth) ---
 $playerAuthSigningSecret = New-Secret
@@ -74,7 +71,6 @@ secrets:
   GameAuth__Issuer: '$gameAuthIssuer'
   GameAuth__Audience: '$gameAuthAudience'
   GameAuth__SigningSecret: '$gameAuthSigningSecret'
-  GameServer__ConnectionKey: '$connectionKey'
 "@
 
 $gameYaml = @"
@@ -84,7 +80,6 @@ secrets:
   GameAuth__Issuer: '$gameAuthIssuer'
   GameAuth__Audience: '$gameAuthAudience'
   GameAuth__SigningSecret: '$gameAuthSigningSecret'
-  Network__ConnectionKey: '$connectionKey'
   Lobbies__BaseUrl: '$lobbiesBaseUrl'
 "@
 
@@ -93,5 +88,5 @@ Set-Content -Path $gameFile    -Value $gameYaml    -Encoding utf8
 
 Write-Host "Wrote $lobbiesFile"
 Write-Host "Wrote $gameFile"
-Write-Host "Shared GameAuth signing secret and connection key are consistent across both charts."
+Write-Host "Shared GameAuth signing secret is consistent across both charts."
 Write-Host "Deploy with: skaffold run -p oci-prod"

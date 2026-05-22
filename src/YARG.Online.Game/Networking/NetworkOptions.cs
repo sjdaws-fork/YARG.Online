@@ -6,7 +6,5 @@ public sealed class NetworkOptions
 
     public int Port { get; init; } = 9050;
 
-    public string ConnectionKey { get; init; } = "yarg-online-game-dev";
-
     public int MaxConnections { get; init; } = 32;
 }

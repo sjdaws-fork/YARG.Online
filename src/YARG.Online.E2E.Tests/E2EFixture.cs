@@ -23,7 +23,6 @@ public sealed class E2EFixture : IAsyncLifetime
     public const string AuthSecret = "yarg-e2e-test-auth-secret-must-be-32-bytes-or-more!";
     public const string AuthIssuer = "yarg-server-browser";
     public const string AuthAudience = "yarg-api";
-    public const string ConnectionKey = "yarg-online-game-dev";
 
     public WebApplicationFactory<Program> Lobbies { get; private set; } = null!;
     public IHost GameHost { get; private set; } = null!;
@@ -61,7 +60,6 @@ public sealed class E2EFixture : IAsyncLifetime
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["Network:Port"] = udpPort.ToString(),
-            ["Network:ConnectionKey"] = ConnectionKey,
             ["Network:MaxConnections"] = "32",
             ["GameAuth:Issuer"] = GameIssuer,
             ["GameAuth:Audience"] = GameAudience,
@@ -84,6 +82,7 @@ public sealed class E2EFixture : IAsyncLifetime
         builder.Services.AddSingleton<AuthenticatedPeerRegistry>();
         builder.Services.AddSingleton<GameSessionManager>();
         builder.Services.AddSingleton<AgonesReadinessSignal>();
+        builder.Services.AddSingleton<IRelaySender, PassthroughRelaySender>();
 
         builder.Services.AddHttpClient<ILobbiesClient, LobbiesClient>((sp, http) =>
         {
@@ -127,7 +126,6 @@ public sealed class E2EFixture : IAsyncLifetime
                     ["GameAuth:Audience"] = GameAudience,
                     ["GameAuth:SigningSecret"] = GameSecret,
                     ["GameServer:Endpoint"] = $"127.0.0.1:{_udpPort}",
-                    ["GameServer:ConnectionKey"] = ConnectionKey,
                 });
             });
         }

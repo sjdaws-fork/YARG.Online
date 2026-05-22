@@ -35,7 +35,6 @@ public sealed record PlayerKickedEvent(string LobbyId, string UserId, string Rea
 public sealed record GameStartedEvent(
     string LobbyId,
     string GameServerEndpoint,
-    string ConnectionKey,
     string GameToken,
     DateTimeOffset ExpiresAt);
 
