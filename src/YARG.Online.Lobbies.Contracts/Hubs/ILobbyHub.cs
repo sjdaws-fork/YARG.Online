@@ -19,4 +19,14 @@ public interface ILobbyHub
     Task TransferHost(TransferHostArgs args);
     Task KickPlayer(KickPlayerArgs args);
     Task StartGame();
+
+    /// <summary>
+    /// Signal that the caller has returned to the lobby from the post-game
+    /// results screen (or never visited it — defaults true for everyone in
+    /// the SongSelect state). The server flips the caller's per-member
+    /// "back in lobby" flag to true and broadcasts
+    /// <see cref="ILobbyHubClient.OnPlayerLobbyReadyChanged"/> so the host's
+    /// Start button can ungate once every peer has reported in.
+    /// </summary>
+    Task LeaveResults();
 }

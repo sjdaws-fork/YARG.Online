@@ -28,4 +28,5 @@ public interface ILobbyHubClient
     Task OnPlayerKicked(PlayerKickedEvent e);
     Task OnGameStarted(GameStartedEvent e);
     Task OnLobbyStatusChanged(LobbyStatusChangedEvent e);
+    Task OnPlayerLobbyReadyChanged(PlayerLobbyReadyChangedEvent e);
 }

@@ -102,6 +102,10 @@ public enum StartGameOutcome
     AlreadyStarted,
     NotEnoughPlayers,
     QueueEmpty,
+    /// <summary>One or more members are still viewing the post-game results
+    /// screen (or haven't reported back to the lobby yet). The host must
+    /// wait until every member's <c>IsBackInLobby</c> flag is true.</summary>
+    PlayersStillInResults,
 }
 
 public sealed record StartGameMember(string UserId, string DisplayName);
@@ -129,14 +133,28 @@ public enum SongStartedOutcome
 
 public sealed record SongStartedResultData(SongStartedOutcome Outcome, Lobby? Lobby);
 
+public enum LeaveResultsOutcome
+{
+    /// <summary>Flag flipped to true; broadcast the event.</summary>
+    MarkedBackInLobby,
+    /// <summary>Already true — caller was never away. Treated as a no-op; no broadcast needed.</summary>
+    AlreadyBackInLobby,
+    NotFound,
+    NotMember,
+}
+
+public sealed record LeaveResultsResultData(LeaveResultsOutcome Outcome, Lobby? Lobby);
+
 public interface ILobbyRepository
 {
     /// <summary>Persist a new lobby with the host's initial song library. Returns false if the slug already exists (rare collision).</summary>
-    Task<bool> CreateAsync(Lobby lobby, IReadOnlyCollection<string> hostLibrary, CancellationToken ct);
+    /// <param name="hostInstrument">Host's selected instrument as a YARG.Core.Instrument byte; echoed back via LobbyMemberDto.</param>
+    Task<bool> CreateAsync(Lobby lobby, IReadOnlyCollection<string> hostLibrary, byte hostInstrument, CancellationToken ct);
 
     Task<Lobby?> GetAsync(string lobbyId, CancellationToken ct);
 
-    Task<JoinResultData> JoinAsync(string lobbyId, string userId, string displayName, IReadOnlyCollection<string> library, CancellationToken ct);
+    /// <param name="instrument">Joiner's selected instrument as a YARG.Core.Instrument byte; echoed back via LobbyMemberDto and PlayerJoinedEvent.</param>
+    Task<JoinResultData> JoinAsync(string lobbyId, string userId, string displayName, IReadOnlyCollection<string> library, byte instrument, CancellationToken ct);
 
     Task<LeaveResult> LeaveAsync(string lobbyId, string userId, CancellationToken ct);
 
@@ -228,4 +246,13 @@ public interface ILobbyRepository
         DateTimeOffset startedAt,
         int durationMs,
         CancellationToken ct);
+
+    /// <summary>
+    /// Mark <paramref name="userId"/> as back in the lobby (the player has
+    /// closed the post-game results screen or otherwise returned to the
+    /// song-select view). The host's StartGame is gated on every member
+    /// being back. Idempotent — repeated calls return
+    /// <see cref="LeaveResultsOutcome.AlreadyBackInLobby"/>.
+    /// </summary>
+    Task<LeaveResultsResultData> LeaveResultsAsync(string lobbyId, string userId, CancellationToken ct);
 }

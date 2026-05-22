@@ -16,6 +16,19 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
         public readonly List<string> JoinOrder = new();
         public readonly Dictionary<string, string> DisplayNames =
             new(StringComparer.Ordinal);
+        // Per-member selected instrument as a YARG.Core.Instrument byte. Echoed back
+        // in LobbyMemberDto and PlayerJoinedEvent so other members can render the
+        // right instrument icon in their player list. Not cleared on leave —
+        // mirrors DisplayNames behavior; the entry's lifecycle is the lobby's lifetime.
+        public readonly Dictionary<string, byte> Instruments =
+            new(StringComparer.Ordinal);
+        // Per-member "currently on the lobby/song-select screen" flag. True
+        // by default (every joining member arrives at the lobby), flipped to
+        // false in StartGameAsync, flipped back to true in LeaveResultsAsync
+        // when each member confirms they've returned from the results screen.
+        // The host's StartGameAsync is gated on every member being true.
+        public readonly Dictionary<string, bool> IsBackInLobby =
+            new(StringComparer.Ordinal);
         // Users banned for the lobby's lifetime. Populated by KickPlayerAsync, cleared on lobby close.
         public readonly HashSet<string> Banned = new(StringComparer.Ordinal);
         public readonly Dictionary<string, HashSet<string>> PlayerLibraries =
@@ -38,7 +51,7 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
         _maxQueueSize = Math.Max(1, options.Value.MaxQueueSize);
     }
 
-    public Task<bool> CreateAsync(Lobby lobby, IReadOnlyCollection<string> hostLibrary, CancellationToken ct)
+    public Task<bool> CreateAsync(Lobby lobby, IReadOnlyCollection<string> hostLibrary, byte hostInstrument, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
 
@@ -51,7 +64,9 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
         entry.Members.Add(lobby.HostUserId);
         entry.JoinOrder.Add(lobby.HostUserId);
         entry.DisplayNames[lobby.HostUserId] = lobby.HostName;
+        entry.Instruments[lobby.HostUserId] = hostInstrument;
         entry.PlayerLibraries[lobby.HostUserId] = hostLib;
+        entry.IsBackInLobby[lobby.HostUserId] = true;
 
         var added = _entries.TryAdd(lobby.Id, entry);
         return Task.FromResult(added);
@@ -71,7 +86,7 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
         }
     }
 
-    public Task<JoinResultData> JoinAsync(string lobbyId, string userId, string displayName, IReadOnlyCollection<string> library, CancellationToken ct)
+    public Task<JoinResultData> JoinAsync(string lobbyId, string userId, string displayName, IReadOnlyCollection<string> library, byte instrument, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
 
@@ -106,7 +121,13 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
             entry.Members.Add(userId);
             entry.JoinOrder.Add(userId);
             entry.DisplayNames[userId] = displayName;
+            entry.Instruments[userId] = instrument;
             entry.PlayerLibraries[userId] = lib;
+            // A late joiner lands on the lobby/song-select screen even if a
+            // game is in progress for other members, so the flag is true on
+            // arrival. The flag only flips for joiners who themselves go
+            // through a StartGame → ResultsScreen → LeaveResults cycle.
+            entry.IsBackInLobby[userId] = true;
 
             // New shared library = old shared library ∩ new player's library.
             var removed = new List<string>();
@@ -246,7 +267,13 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
             foreach (var userId in entry.JoinOrder)
             {
                 var name = entry.DisplayNames.TryGetValue(userId, out var n) ? n : userId;
-                members.Add(new LobbyMemberDto(userId, name));
+                var inst = entry.Instruments.TryGetValue(userId, out var i) ? i : (byte) 0;
+                var back = !entry.IsBackInLobby.TryGetValue(userId, out var b) || b;
+                members.Add(new LobbyMemberDto(userId, name)
+                {
+                    Instrument = inst,
+                    IsBackInLobby = back,
+                });
             }
             return Task.FromResult<IReadOnlyList<LobbyMemberDto>>(members);
         }
@@ -557,7 +584,27 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
                 return Task.FromResult(new StartGameResultData(StartGameOutcome.QueueEmpty, null, null));
             }
 
+            // Gate: every member must have signalled they're back in the
+            // lobby. The flag is true by default for fresh joiners and the
+            // host on lobby creation; flipped false on the previous StartGame
+            // and back to true only when each member calls LeaveResults
+            // after closing the post-game results screen.
+            foreach (var userId in entry.JoinOrder)
+            {
+                if (entry.IsBackInLobby.TryGetValue(userId, out var ready) && !ready)
+                {
+                    return Task.FromResult(new StartGameResultData(StartGameOutcome.PlayersStillInResults, null, null));
+                }
+            }
+
             entry.Lobby = entry.Lobby with { Status = LobbyStatus.GameStarted };
+
+            // Every member is now in-game until they each report back via
+            // LeaveResults. Flip the flags atomically with the status change.
+            foreach (var userId in entry.JoinOrder)
+            {
+                entry.IsBackInLobby[userId] = false;
+            }
 
             var members = new List<StartGameMember>(entry.JoinOrder.Count);
             foreach (var userId in entry.JoinOrder)
@@ -634,6 +681,32 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
                 SongDurationMs = durationMs,
             };
             return Task.FromResult(new SongStartedResultData(SongStartedOutcome.Set, entry.Lobby));
+        }
+    }
+
+    public Task<LeaveResultsResultData> LeaveResultsAsync(string lobbyId, string userId, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        if (!_entries.TryGetValue(lobbyId, out var entry))
+        {
+            return Task.FromResult(new LeaveResultsResultData(LeaveResultsOutcome.NotFound, null));
+        }
+
+        lock (entry.Lock)
+        {
+            if (!entry.Members.Contains(userId))
+            {
+                return Task.FromResult(new LeaveResultsResultData(LeaveResultsOutcome.NotMember, null));
+            }
+
+            if (entry.IsBackInLobby.TryGetValue(userId, out var already) && already)
+            {
+                return Task.FromResult(new LeaveResultsResultData(LeaveResultsOutcome.AlreadyBackInLobby, entry.Lobby));
+            }
+
+            entry.IsBackInLobby[userId] = true;
+            return Task.FromResult(new LeaveResultsResultData(LeaveResultsOutcome.MarkedBackInLobby, entry.Lobby));
         }
     }
 

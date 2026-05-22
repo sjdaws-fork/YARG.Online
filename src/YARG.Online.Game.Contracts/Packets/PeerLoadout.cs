@@ -8,8 +8,8 @@ namespace YARG.Online.Game.Contracts.Packets;
 // to instantiate an engine for any other peer at game start.
 //
 // PeerId is the server-assigned LiteNetLib peer id and matches the value the
-// server stamps onto EngineInputBatch packets it fans out. Clients use this to
-// map incoming remote inputs back to a YargPlayer.
+// server stamps onto fan-out packets. Clients use this to map inbound
+// events back to a YargPlayer.
 public sealed class PeerLoadout : INetSerializable
 {
     public int PeerId { get; set; }
@@ -18,6 +18,8 @@ public sealed class PeerLoadout : INetSerializable
     public InstrumentId Instrument { get; set; }
     public DifficultyId Difficulty { get; set; }
     public Guid EnginePreset { get; set; }
+    public float NoteSpeed { get; set; }
+    public ulong Modifiers { get; set; }
 
     public void Serialize(NetDataWriter writer)
     {
@@ -27,6 +29,8 @@ public sealed class PeerLoadout : INetSerializable
         writer.Put((byte)Instrument);
         writer.Put((byte)Difficulty);
         writer.Put(EnginePreset.ToByteArray());
+        writer.Put(NoteSpeed);
+        writer.Put(Modifiers);
     }
 
     public void Deserialize(NetDataReader reader)
@@ -39,5 +43,7 @@ public sealed class PeerLoadout : INetSerializable
         var guidBytes = new byte[16];
         reader.GetBytes(guidBytes, 16);
         EnginePreset = new Guid(guidBytes);
+        NoteSpeed = reader.GetFloat();
+        Modifiers = reader.GetULong();
     }
 }

@@ -171,7 +171,7 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
                 CreatedAt: _clock.GetUtcNow(),
                 SharedSongCount: normalizedLibrary.Count);
 
-            if (await _repo.CreateAsync(lobby, normalizedLibrary, Context.ConnectionAborted))
+            if (await _repo.CreateAsync(lobby, normalizedLibrary, args.Instrument, Context.ConnectionAborted))
             {
                 await Groups.RemoveFromGroupAsync(Context.ConnectionId, BrowseGroup, Context.ConnectionAborted);
                 await Groups.AddToGroupAsync(Context.ConnectionId, LobbyGroup(lobby.Id), Context.ConnectionAborted);
@@ -220,7 +220,7 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
 
         var (userId, displayName) = Context.User!.RequireCaller();
         var normalizedLibrary = NormalizeLibrary(args.Library);
-        var joinData = await _repo.JoinAsync(lobbyId, userId, displayName, normalizedLibrary, Context.ConnectionAborted);
+        var joinData = await _repo.JoinAsync(lobbyId, userId, displayName, normalizedLibrary, args.Instrument, Context.ConnectionAborted);
 
         _logger.LogTrace(
             "EnterLobby join result: ConnectionId={ConnectionId} UserId={UserId} LobbyId={LobbyId} Result={Result}",
@@ -255,7 +255,7 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
         if (isNewMember)
         {
             await Clients.OthersInGroup(LobbyGroup(lobbyId))
-                .OnPlayerJoined(new PlayerJoinedEvent(lobbyId, userId, displayName));
+                .OnPlayerJoined(new PlayerJoinedEvent(lobbyId, userId, displayName) { Instrument = args.Instrument });
             _buffer.Enqueue(new LobbyChange(lobbyId, LobbyChangeKind.Updated, _mapper.Map<LobbyDto>(joinedLobby)));
 
             if (joinData.Delta is { Removed.Count: > 0 } delta)
@@ -569,6 +569,16 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
                     "StartGame dispatched game tokens: LobbyId={LobbyId} ExpectedMembers={ExpectedMembers} TokensIssued={TokensIssued} Dispatches={Dispatches}",
                     lobbyId, expectedMembers, tokensIssued, dispatches);
 
+                // Every member's IsBackInLobby flag flipped to false inside
+                // StartGameAsync. Broadcast the change so each client's
+                // LobbyRoomState mirror updates and the host's Start button
+                // immediately reflects the new gate state.
+                foreach (var member in result.Members!)
+                {
+                    await Clients.Group(LobbyGroup(lobbyId))
+                        .OnPlayerLobbyReadyChanged(new PlayerLobbyReadyChangedEvent(
+                            lobbyId, member.UserId, IsBackInLobby: false));
+                }
                 await Clients.Group(LobbyGroup(lobbyId))
                     .OnLobbyStatusChanged(new LobbyStatusChangedEvent(lobbyId, LobbyStatus.GameStarted));
                 _buffer.Enqueue(new LobbyChange(lobbyId, LobbyChangeKind.Updated, _mapper.Map<LobbyDto>(result.Lobby!)));
@@ -583,9 +593,43 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
                 throw Hub("not_enough_players");
             case StartGameOutcome.QueueEmpty:
                 throw Hub("queue_empty");
+            case StartGameOutcome.PlayersStillInResults:
+                throw Hub("players_still_in_results");
             default:
                 throw new InvalidOperationException($"Unexpected start outcome {result.Outcome}.");
         }
+    }
+
+    public async Task LeaveResults()
+    {
+        var lobbyId = _connections.GetLobby(Context.ConnectionId);
+        var userId = _connections.GetUserId(Context.ConnectionId);
+
+        _logger.LogTrace(
+            "LeaveResults: ConnectionId={ConnectionId} LobbyId={LobbyId} UserId={UserId}",
+            Context.ConnectionId, lobbyId, userId);
+
+        if (lobbyId is null || userId is null)
+        {
+            // Common case: client invokes LeaveResults defensively from the
+            // results screen even when they aren't in a lobby (offline play).
+            // Silently no-op rather than throwing.
+            return;
+        }
+
+        var result = await _repo.LeaveResultsAsync(lobbyId, userId, Context.ConnectionAborted);
+
+        _logger.LogTrace(
+            "LeaveResults outcome: ConnectionId={ConnectionId} LobbyId={LobbyId} UserId={UserId} Outcome={Outcome}",
+            Context.ConnectionId, lobbyId, userId, result.Outcome);
+
+        if (result.Outcome == LeaveResultsOutcome.MarkedBackInLobby)
+        {
+            await Clients.Group(LobbyGroup(lobbyId))
+                .OnPlayerLobbyReadyChanged(new PlayerLobbyReadyChangedEvent(
+                    lobbyId, userId, IsBackInLobby: true));
+        }
+        // Other outcomes are no-ops or harmless duplicates — no broadcast.
     }
 
     /// <summary>
