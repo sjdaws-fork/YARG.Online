@@ -834,7 +834,10 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
             case RemoveQueuedSongOutcome.Removed:
                 await Clients.Group(LobbyGroup(lobbyId))
                     .OnSongRemovedFromQueue(new SongRemovedFromQueueEvent(
-                        lobbyId, args.Sequence, SongRemovalReason.Removed));
+                        lobbyId, args.Sequence, SongRemovalReason.Removed)
+                    {
+                        RemovedByUserId = userId,
+                    });
                 return;
             case RemoveQueuedSongOutcome.NotFound:
             case RemoveQueuedSongOutcome.NotMember:

@@ -20,7 +20,16 @@ public sealed record LobbySongLibraryUpdatedEvent(string LobbyId, string[] Added
 
 public sealed record SongQueuedEvent(string LobbyId, QueuedSongDto Song);
 
-public sealed record SongRemovedFromQueueEvent(string LobbyId, long Sequence, SongRemovalReason Reason);
+public sealed record SongRemovedFromQueueEvent(string LobbyId, long Sequence, SongRemovalReason Reason)
+{
+    /// <summary>
+    /// User id of the member who triggered the removal. Set only when
+    /// <see cref="Reason"/> is <see cref="SongRemovalReason.Removed"/> — for the
+    /// other reasons (Played, RequesterLeft) there's no acting user, so this is
+    /// null. Clients resolve the display name through the lobby's member map.
+    /// </summary>
+    public string? RemovedByUserId { get; init; }
+}
 
 public sealed record QueuedSongAvailabilityChangedEvent(
     string LobbyId,
