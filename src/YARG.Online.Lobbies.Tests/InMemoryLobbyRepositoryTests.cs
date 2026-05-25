@@ -8,12 +8,43 @@ using YARG.Online.Lobbies.Lobbies;
 
 namespace YARG.Online.Lobbies.Tests;
 
+/// <summary>
+/// Adapter for tests that were written against the pre-factory CreateAsync signature.
+/// Keeps the test bodies readable (<c>repo.CreateAsync(NewLobby(), ...)</c>) while the
+/// production interface now takes a factory so the repo can mint IDs internally.
+/// The Lobby passed here is captured by closure and returned regardless of what ID
+/// the repo generates — the dictionary keys off the Lobby's Id, so tests retain
+/// deterministic IDs without needing a fake generator that knows them upfront.
+/// </summary>
+internal static class LobbyRepositoryTestExtensions
+{
+    public static Task<Lobby?> CreateAsync(
+        this ILobbyRepository repo,
+        Lobby lobby,
+        IReadOnlyCollection<string> hostLibrary,
+        byte hostInstrument,
+        CancellationToken ct) =>
+        repo.CreateAsync(_ => lobby, hostLibrary, hostInstrument, ct);
+}
+
 public class InMemoryLobbyRepositoryTests
 {
     private static readonly string[] EmptyLib = Array.Empty<string>();
 
+    // The repo now owns ID generation, but the tests still want to pin lobbies to
+    // hard-coded IDs ("AAAAAAAA", "BBBBBBBB" etc.) so they can address them in
+    // follow-up JoinAsync / GetAsync calls. The fix is to inject a stub generator
+    // whose output is ignored by the test's factory shim (see CreateAsync extension
+    // below) — the Lobby the test passes in carries the deterministic Id and the
+    // ConcurrentDictionary keys off that, not the generator's output.
+    private sealed class StubLobbyIdGenerator : ILobbyIdGenerator
+    {
+        public string Next() => "STUB-ID";
+    }
+
     private static InMemoryLobbyRepository NewRepo(int maxChatHistorySize = 100) =>
-        new(Options.Create(new LobbyOptions { MaxChatHistorySize = maxChatHistorySize }));
+        new(new StubLobbyIdGenerator(),
+            Options.Create(new LobbyOptions { MaxChatHistorySize = maxChatHistorySize }));
 
     // Two-step StartGame helper for tests that don't care about the intermediate Starting
     // state or about exercising allocator failures — synthesizes a placeholder allocation.
@@ -40,13 +71,18 @@ public class InMemoryLobbyRepositoryTests
         SharedSongCount: 0);
 
     [Fact]
-    public async Task CreateAsync_returns_true_for_new_id_and_false_for_collision()
+    public async Task CreateAsync_returns_lobby_for_new_id_and_null_when_all_attempts_collide()
     {
         var repo = NewRepo();
         var lobby = NewLobby();
 
-        Assert.True(await repo.CreateAsync(lobby, EmptyLib, 0, default));
-        Assert.False(await repo.CreateAsync(lobby, EmptyLib, 0, default));
+        // First create: succeeds.
+        Assert.NotNull(await repo.CreateAsync(lobby, EmptyLib, 0, default));
+
+        // Second create with the same Lobby (factory ignores the generator-provided ID
+        // and returns the same hard-coded Id every retry). Exhausts the attempt budget,
+        // so the repo reports collision via a null return.
+        Assert.Null(await repo.CreateAsync(lobby, EmptyLib, 0, default));
     }
 
     [Fact]
@@ -379,7 +415,8 @@ public class InMemoryLobbyRepositoryTests
     // --- Song queue tests ---
 
     private static InMemoryLobbyRepository NewRepoWithQueueCap(int maxQueueSize) =>
-        new(Options.Create(new LobbyOptions { MaxQueueSize = maxQueueSize }));
+        new(new StubLobbyIdGenerator(),
+            Options.Create(new LobbyOptions { MaxQueueSize = maxQueueSize }));
 
     [Fact]
     public async Task EnqueueSongAsync_assigns_monotonic_sequences_and_excludes_requester_from_missing()

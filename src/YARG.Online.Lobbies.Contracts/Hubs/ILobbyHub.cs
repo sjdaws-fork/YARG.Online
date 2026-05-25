@@ -29,4 +29,16 @@ public interface ILobbyHub
     /// Start button can ungate once every peer has reported in.
     /// </summary>
     Task LeaveResults();
+
+    /// <summary>
+    /// Replace the caller's per-member song library with a freshly-scanned set
+    /// (called from the lobby picker's orange → ScanSongs popup after the local
+    /// SongContainer refresh completes). The server recomputes the lobby's
+    /// shared-library intersection across all members and broadcasts
+    /// <see cref="ILobbyHubClient.OnLobbySongLibraryUpdated"/> with the diff
+    /// against the previous shared set, plus any
+    /// <see cref="ILobbyHubClient.OnQueuedSongAvailabilityChanged"/> deltas for
+    /// queued songs the caller now does (or no longer does) have locally.
+    /// </summary>
+    Task UpdateLibrary(UpdateLibraryArgs args);
 }

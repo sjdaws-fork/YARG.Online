@@ -16,6 +16,14 @@ public sealed record CreateLobbyArgs(
 {
     /// <summary>Caller's selected instrument as a YARG.Core.Instrument byte. 0 if unspecified.</summary>
     public byte Instrument { get; init; }
+
+    /// <summary>
+    /// True (default) → lobby appears in the public browser snapshot and
+    /// incremental updates. False → lobby is only reachable via the join-by-code
+    /// path (typed lobby ID); it is never enqueued into the browse change buffer
+    /// and never surfaces in <c>OnLobbySnapshot</c> / <c>OnLobbyBatch</c>.
+    /// </summary>
+    public bool IsPublic { get; init; } = true;
 }
 
 public sealed record CreateLobbyResult(LobbyDto Lobby);
@@ -72,3 +80,5 @@ public sealed record RemoveQueuedSongArgs(long Sequence);
 public sealed record TransferHostArgs(string TargetUserId);
 
 public sealed record KickPlayerArgs(string TargetUserId);
+
+public sealed record UpdateLibraryArgs(SongLibraryDto Library);

@@ -108,7 +108,7 @@ builder.Services.AddHealthChecks();
 builder.Services.AddSingleton<JwtTokenService>();
 builder.Services.AddSingleton<IJwtTokenService>(sp => sp.GetRequiredService<JwtTokenService>());
 builder.Services.AddSingleton<IGameJwtTokenService, GameJwtTokenService>();
-builder.Services.AddSingleton<ILobbyIdGenerator, Base32LobbyIdGenerator>();
+builder.Services.AddSingleton<ILobbyIdGenerator, LobbyIdGenerator>();
 builder.Services.AddSingleton<ILobbyRepository, InMemoryLobbyRepository>();
 builder.Services.AddSingleton<IConnectionTracker, ConnectionTracker>();
 builder.Services.AddSingleton<ILobbyChangeBuffer, LobbyChangeBuffer>();

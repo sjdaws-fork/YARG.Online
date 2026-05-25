@@ -45,34 +45,58 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
     }
 
     private readonly ConcurrentDictionary<string, Entry> _entries = new(StringComparer.Ordinal);
+    private readonly ILobbyIdGenerator _idGen;
     private readonly int _maxChatHistorySize;
     private readonly int _maxQueueSize;
+    private readonly int _idGenerationAttempts;
 
-    public InMemoryLobbyRepository(IOptions<LobbyOptions> options)
+    public InMemoryLobbyRepository(ILobbyIdGenerator idGen, IOptions<LobbyOptions> options)
     {
+        _idGen = idGen;
         _maxChatHistorySize = Math.Max(1, options.Value.MaxChatHistorySize);
         _maxQueueSize = Math.Max(1, options.Value.MaxQueueSize);
+        _idGenerationAttempts = Math.Max(1, options.Value.IdGenerationAttempts);
     }
 
-    public Task<bool> CreateAsync(Lobby lobby, IReadOnlyCollection<string> hostLibrary, byte hostInstrument, CancellationToken ct)
+    public Task<Lobby?> CreateAsync(
+        Func<string, Lobby> lobbyFactory,
+        IReadOnlyCollection<string> hostLibrary,
+        byte hostInstrument,
+        CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
 
         var hostLib = new HashSet<string>(hostLibrary, StringComparer.Ordinal);
-        var entry = new Entry
-        {
-            Lobby = lobby with { SharedSongCount = hostLib.Count },
-            LobbySongLibrary = new HashSet<string>(hostLib, StringComparer.Ordinal),
-        };
-        entry.Members.Add(lobby.HostUserId);
-        entry.JoinOrder.Add(lobby.HostUserId);
-        entry.DisplayNames[lobby.HostUserId] = lobby.HostName;
-        entry.Instruments[lobby.HostUserId] = hostInstrument;
-        entry.PlayerLibraries[lobby.HostUserId] = hostLib;
-        entry.IsBackInLobby[lobby.HostUserId] = true;
 
-        var added = _entries.TryAdd(lobby.Id, entry);
-        return Task.FromResult(added);
+        // Generate-then-TryAdd retry loop. The Redis-backed implementation will collapse this
+        // into a single SETNX round-trip per attempt, but the contract is the same: keep
+        // trying fresh IDs until one sticks or the budget runs out.
+        for (var attempt = 0; attempt < _idGenerationAttempts; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var id = _idGen.Next();
+            var lobby = lobbyFactory(id) with { SharedSongCount = hostLib.Count };
+
+            var entry = new Entry
+            {
+                Lobby = lobby,
+                LobbySongLibrary = new HashSet<string>(hostLib, StringComparer.Ordinal),
+            };
+            entry.Members.Add(lobby.HostUserId);
+            entry.JoinOrder.Add(lobby.HostUserId);
+            entry.DisplayNames[lobby.HostUserId] = lobby.HostName;
+            entry.Instruments[lobby.HostUserId] = hostInstrument;
+            entry.PlayerLibraries[lobby.HostUserId] = hostLib;
+            entry.IsBackInLobby[lobby.HostUserId] = true;
+
+            if (_entries.TryAdd(lobby.Id, entry))
+            {
+                return Task.FromResult<Lobby?>(lobby);
+            }
+        }
+
+        return Task.FromResult<Lobby?>(null);
     }
 
     public Task<Lobby?> GetAsync(string lobbyId, CancellationToken ct)
@@ -295,7 +319,10 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
             }
         }
 
-        IEnumerable<Lobby> filtered = snapshot;
+        // Private lobbies never surface via the public search/snapshot path.
+        // The only way to join a private lobby is the join-by-code flow, which
+        // bypasses search entirely and hits GetAsync(lobbyId) directly.
+        IEnumerable<Lobby> filtered = snapshot.Where(l => l.IsPublic);
 
         if (query.GameMode is { } gm)
         {
@@ -817,6 +844,98 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
             }
 
             return Task.FromResult(new LeaveResultsResultData(LeaveResultsOutcome.MarkedBackInLobby, entry.Lobby, null));
+        }
+    }
+
+    public Task<UpdateLibraryResultData> UpdatePlayerLibraryAsync(
+        string lobbyId,
+        string userId,
+        IReadOnlyCollection<string> library,
+        CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        if (!_entries.TryGetValue(lobbyId, out var entry))
+        {
+            return Task.FromResult(new UpdateLibraryResultData(
+                UpdateLibraryOutcome.NotFound, null, null, null));
+        }
+
+        lock (entry.Lock)
+        {
+            if (!entry.Members.Contains(userId))
+            {
+                return Task.FromResult(new UpdateLibraryResultData(
+                    UpdateLibraryOutcome.NotMember, null, null, null));
+            }
+
+            var newLib = new HashSet<string>(library, StringComparer.Ordinal);
+            entry.PlayerLibraries[userId] = newLib;
+
+            // Full re-intersection — same approach as RemoveMemberLocked. An incremental
+            // diff against the caller's previous lib alone isn't sufficient: a song the
+            // caller GAINED only enters the shared set if every OTHER member also has it,
+            // and a song the caller LOST drops out of the shared set regardless.
+            HashSet<string>? newShared = null;
+            foreach (var (_, plib) in entry.PlayerLibraries)
+            {
+                if (newShared is null)
+                {
+                    newShared = new HashSet<string>(plib, StringComparer.Ordinal);
+                }
+                else
+                {
+                    newShared.IntersectWith(plib);
+                }
+                if (newShared.Count == 0) break;
+            }
+            newShared ??= new HashSet<string>(StringComparer.Ordinal);
+
+            var added = newShared.Except(entry.LobbySongLibrary, StringComparer.Ordinal).ToList();
+            var removed = entry.LobbySongLibrary.Except(newShared, StringComparer.Ordinal).ToList();
+            entry.LobbySongLibrary = newShared;
+
+            // Walk the queue and re-derive this user's presence in MissingFor for each song.
+            // A song the user now has → strip them from MissingFor. A song they no longer have
+            // → add them.
+            List<QueueAvailabilityDelta>? queueUpdates = null;
+            for (var i = 0; i < entry.SongQueue.Count; i++)
+            {
+                var queued = entry.SongQueue[i];
+                bool userHas = newLib.Contains(queued.SongHash);
+                bool userListedMissing = queued.MissingFor.Contains(userId);
+
+                if (userHas && userListedMissing)
+                {
+                    var trimmed = queued.MissingFor.Where(id => id != userId).ToArray();
+                    entry.SongQueue[i] = queued with { MissingFor = trimmed };
+                    queueUpdates ??= new List<QueueAvailabilityDelta>();
+                    queueUpdates.Add(new QueueAvailabilityDelta(
+                        queued.Sequence,
+                        Array.Empty<string>(),
+                        new[] { userId }));
+                }
+                else if (!userHas && !userListedMissing)
+                {
+                    var appended = new List<string>(queued.MissingFor.Count + 1);
+                    appended.AddRange(queued.MissingFor);
+                    appended.Add(userId);
+                    entry.SongQueue[i] = queued with { MissingFor = appended };
+                    queueUpdates ??= new List<QueueAvailabilityDelta>();
+                    queueUpdates.Add(new QueueAvailabilityDelta(
+                        queued.Sequence,
+                        new[] { userId },
+                        Array.Empty<string>()));
+                }
+            }
+
+            entry.Lobby = entry.Lobby with { SharedSongCount = entry.LobbySongLibrary.Count };
+
+            return Task.FromResult(new UpdateLibraryResultData(
+                UpdateLibraryOutcome.Applied,
+                entry.Lobby,
+                new SongLibraryDelta(added, removed),
+                queueUpdates));
         }
     }
 

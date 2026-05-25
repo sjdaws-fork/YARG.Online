@@ -3,7 +3,6 @@ using FluentValidation;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using YARG.Online.Lobbies.Allocation;
 using YARG.Online.Lobbies.Auth;
 using YARG.Online.Lobbies.Contracts.Enums;
@@ -23,7 +22,6 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
 
     private readonly ILobbyRepository _repo;
     private readonly ILobbyChangeBuffer _buffer;
-    private readonly ILobbyIdGenerator _idGen;
     private readonly IConnectionTracker _connections;
     private readonly IValidator<CreateLobbyArgs> _validator;
     private readonly IValidator<EnterLobbyArgs> _enterValidator;
@@ -33,7 +31,6 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
     private readonly IValidator<KickPlayerArgs> _kickPlayerValidator;
     private readonly IGameJwtTokenService _gameJwt;
     private readonly IMapper _mapper;
-    private readonly LobbyOptions _options;
     private readonly IGameAllocator _allocator;
     private readonly TimeProvider _clock;
     private readonly ILogger<LobbyHub> _logger;
@@ -41,7 +38,6 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
     public LobbyHub(
         ILobbyRepository repo,
         ILobbyChangeBuffer buffer,
-        ILobbyIdGenerator idGen,
         IConnectionTracker connections,
         IValidator<CreateLobbyArgs> validator,
         IValidator<EnterLobbyArgs> enterValidator,
@@ -51,14 +47,12 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
         IValidator<KickPlayerArgs> kickPlayerValidator,
         IGameJwtTokenService gameJwt,
         IMapper mapper,
-        IOptions<LobbyOptions> options,
         IGameAllocator allocator,
         TimeProvider clock,
         ILogger<LobbyHub> logger)
     {
         _repo = repo;
         _buffer = buffer;
-        _idGen = idGen;
         _connections = connections;
         _validator = validator;
         _enterValidator = enterValidator;
@@ -68,7 +62,6 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
         _kickPlayerValidator = kickPlayerValidator;
         _gameJwt = gameJwt;
         _mapper = mapper;
-        _options = options.Value;
         _allocator = allocator;
         _clock = clock;
         _logger = logger;
@@ -154,11 +147,13 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
 
         var normalizedLibrary = NormalizeLibrary(args.Library);
 
-        var attempts = _options.IdGenerationAttempts;
-        for (var attempt = 0; attempt < attempts; attempt++)
-        {
-            var lobby = new Lobby(
-                Id: _idGen.Next(),
+        // ID generation + collision retries live inside the repository so a future Redis-backed
+        // implementation can use a single atomic SETNX per attempt instead of the in-memory
+        // implementation's generate-then-TryAdd loop. The factory builds the Lobby once the
+        // repo has minted (or re-minted, on collision) an ID.
+        var lobby = await _repo.CreateAsync(
+            id => new Lobby(
+                Id: id,
                 Name: args.Name,
                 HostUserId: userId,
                 HostName: displayName,
@@ -168,29 +163,38 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
                 PlayerCount: 1,
                 MaxPlayers: args.MaxPlayers,
                 CreatedAt: _clock.GetUtcNow(),
-                SharedSongCount: normalizedLibrary.Count);
+                SharedSongCount: normalizedLibrary.Count,
+                IsPublic: args.IsPublic),
+            normalizedLibrary,
+            args.Instrument,
+            Context.ConnectionAborted);
 
-            if (await _repo.CreateAsync(lobby, normalizedLibrary, args.Instrument, Context.ConnectionAborted))
-            {
-                await Groups.RemoveFromGroupAsync(Context.ConnectionId, BrowseGroup, Context.ConnectionAborted);
-                await Groups.AddToGroupAsync(Context.ConnectionId, LobbyGroup(lobby.Id), Context.ConnectionAborted);
-                _connections.SetLobby(Context.ConnectionId, userId, lobby.Id);
+        if (lobby is null)
+        {
+            _logger.LogTrace(
+                "CreateLobby exhausted id attempts: ConnectionId={ConnectionId} UserId={UserId}",
+                Context.ConnectionId, userId);
+            throw Hub("lobby_id_exhausted");
+        }
 
-                var dto = _mapper.Map<LobbyDto>(lobby);
-                _buffer.Enqueue(new LobbyChange(lobby.Id, LobbyChangeKind.Added, dto));
+        await Groups.RemoveFromGroupAsync(Context.ConnectionId, BrowseGroup, Context.ConnectionAborted);
+        await Groups.AddToGroupAsync(Context.ConnectionId, LobbyGroup(lobby.Id), Context.ConnectionAborted);
+        _connections.SetLobby(Context.ConnectionId, userId, lobby.Id);
 
-                _logger.LogTrace(
-                    "CreateLobby created: ConnectionId={ConnectionId} UserId={UserId} LobbyId={LobbyId} AttemptIndex={AttemptIndex}",
-                    Context.ConnectionId, userId, lobby.Id, attempt);
-
-                return new CreateLobbyResult(dto);
-            }
+        var dto = _mapper.Map<LobbyDto>(lobby);
+        // Private lobbies are reachable only by join-by-code: never enqueue them
+        // into the browse buffer, so they never surface in OnLobbySnapshot /
+        // OnLobbyBatch broadcasts to the browse group.
+        if (lobby.IsPublic)
+        {
+            _buffer.Enqueue(new LobbyChange(lobby.Id, LobbyChangeKind.Added, dto));
         }
 
         _logger.LogTrace(
-            "CreateLobby exhausted id attempts: ConnectionId={ConnectionId} UserId={UserId} Attempts={Attempts}",
-            Context.ConnectionId, userId, attempts);
-        throw Hub("lobby_id_exhausted");
+            "CreateLobby created: ConnectionId={ConnectionId} UserId={UserId} LobbyId={LobbyId}",
+            Context.ConnectionId, userId, lobby.Id);
+
+        return new CreateLobbyResult(dto);
     }
 
     public async Task<EnterLobbyResult> EnterLobby(EnterLobbyArgs args)
@@ -693,6 +697,66 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
             }
         }
         // Other outcomes are no-ops or harmless duplicates — no broadcast.
+    }
+
+    public async Task UpdateLibrary(UpdateLibraryArgs args)
+    {
+        var lobbyId = _connections.GetLobby(Context.ConnectionId);
+        var userId = _connections.GetUserId(Context.ConnectionId);
+
+        if (lobbyId is null || userId is null)
+        {
+            // Caller invoked from outside an active lobby — silently no-op like
+            // LeaveResults' defensive path. The client guards on CurrentLobby
+            // before calling, but a race with LeaveLobby could land us here.
+            return;
+        }
+
+        if (args?.Library is null)
+        {
+            _logger.LogWarning(
+                "UpdateLibrary rejected: ConnectionId={ConnectionId} Reason=null_args",
+                Context.ConnectionId);
+            return;
+        }
+
+        var library = NormalizeLibrary(args.Library);
+        var result = await _repo.UpdatePlayerLibraryAsync(lobbyId, userId, library, Context.ConnectionAborted);
+
+        _logger.LogTrace(
+            "UpdateLibrary outcome: ConnectionId={ConnectionId} LobbyId={LobbyId} UserId={UserId} Outcome={Outcome}",
+            Context.ConnectionId, lobbyId, userId, result.Outcome);
+
+        if (result.Outcome != UpdateLibraryOutcome.Applied) return;
+
+        // Broadcast the shared-library diff to the whole group (caller included —
+        // the caller needs the delta to reconcile its local LobbySongLibrary
+        // mirror with what the server now considers the shared set).
+        if (result.Delta is { } delta && (delta.Added.Count > 0 || delta.Removed.Count > 0))
+        {
+            await Clients.Group(LobbyGroup(lobbyId))
+                .OnLobbySongLibraryUpdated(new LobbySongLibraryUpdatedEvent(
+                    lobbyId, delta.Added.ToArray(), delta.Removed.ToArray()));
+        }
+
+        if (result.QueueAvailabilityUpdates is { Count: > 0 } queueUpdates)
+        {
+            foreach (var qu in queueUpdates)
+            {
+                await Clients.Group(LobbyGroup(lobbyId))
+                    .OnQueuedSongAvailabilityChanged(new QueuedSongAvailabilityChangedEvent(
+                        lobbyId,
+                        qu.Sequence,
+                        qu.AddedMissing.ToArray(),
+                        qu.RemovedMissing.ToArray()));
+            }
+        }
+
+        // SharedSongCount changed → browser-view consumers want the refreshed snapshot.
+        if (result.Lobby is { } updated)
+        {
+            _buffer.Enqueue(new LobbyChange(lobbyId, LobbyChangeKind.Updated, _mapper.Map<LobbyDto>(updated)));
+        }
     }
 
     /// <summary>

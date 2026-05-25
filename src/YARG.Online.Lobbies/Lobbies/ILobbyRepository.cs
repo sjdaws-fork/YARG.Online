@@ -173,11 +173,46 @@ public enum LeaveResultsOutcome
 
 public sealed record LeaveResultsResultData(LeaveResultsOutcome Outcome, Lobby? Lobby, QueuedSong? AbandonedSong);
 
+public enum UpdateLibraryOutcome
+{
+    /// <summary>Library replaced and intersection recomputed. <see cref="UpdateLibraryResultData.Delta"/>
+    /// contains the diff against the previous shared set (may be empty if the recompute happened to
+    /// land on the same intersection). Caller should broadcast <c>OnLobbySongLibraryUpdated</c>
+    /// and any <c>OnQueuedSongAvailabilityChanged</c> deltas.</summary>
+    Applied,
+    NotFound,
+    NotMember,
+}
+
+public sealed record UpdateLibraryResultData(
+    UpdateLibraryOutcome Outcome,
+    Lobby? Lobby,
+    SongLibraryDelta? Delta,
+    IReadOnlyList<QueueAvailabilityDelta>? QueueAvailabilityUpdates);
+
 public interface ILobbyRepository
 {
-    /// <summary>Persist a new lobby with the host's initial song library. Returns false if the slug already exists (rare collision).</summary>
+    /// <summary>
+    /// Persist a new lobby with a server-assigned ID and the host's initial song library.
+    /// The repository owns ID generation and uniqueness: it calls <paramref name="lobbyFactory"/>
+    /// with a freshly-minted ID (via the injected <see cref="ILobbyIdGenerator"/>) and persists
+    /// the returned <see cref="Lobby"/>, retrying on collision up to
+    /// <see cref="LobbyOptions.IdGenerationAttempts"/> times. Returns the persisted lobby
+    /// (whose <c>Id</c> reflects the assigned ID) or null if every attempt collided.
+    ///
+    /// Locating the retry loop here keeps the in-memory implementation's TryAdd-style probing
+    /// and a future Redis-backed implementation's atomic SETNX primitive behind the same
+    /// abstraction — the hub doesn't need to know which storage is in play, just that the
+    /// repository will either hand back a unique ID or report exhaustion.
+    /// </summary>
+    /// <param name="lobbyFactory">Builds the lobby record given the generated ID. Invoked
+    /// once per attempt; implementations must not assume a single invocation.</param>
     /// <param name="hostInstrument">Host's selected instrument as a YARG.Core.Instrument byte; echoed back via LobbyMemberDto.</param>
-    Task<bool> CreateAsync(Lobby lobby, IReadOnlyCollection<string> hostLibrary, byte hostInstrument, CancellationToken ct);
+    Task<Lobby?> CreateAsync(
+        Func<string, Lobby> lobbyFactory,
+        IReadOnlyCollection<string> hostLibrary,
+        byte hostInstrument,
+        CancellationToken ct);
 
     Task<Lobby?> GetAsync(string lobbyId, CancellationToken ct);
 
@@ -243,6 +278,18 @@ public interface ILobbyRepository
     /// lobby's banned set for the lobby's remaining lifetime.
     /// </summary>
     Task<KickResult> KickPlayerAsync(string lobbyId, string callerUserId, string targetUserId, CancellationToken ct);
+
+    /// <summary>
+    /// Replace the caller's <c>PlayerLibraries</c> entry with <paramref name="library"/> and recompute
+    /// the lobby's shared-library intersection across all remaining members. The returned delta is
+    /// the difference between the old shared set and the new one; queue availability deltas cover
+    /// queued songs the caller is now (or no longer) missing relative to the previous state.
+    /// </summary>
+    Task<UpdateLibraryResultData> UpdatePlayerLibraryAsync(
+        string lobbyId,
+        string userId,
+        IReadOnlyCollection<string> library,
+        CancellationToken ct);
 
     /// <summary>
     /// Transition the lobby to <see cref="LobbyStatus.Starting"/>. Allowed only when the caller is the

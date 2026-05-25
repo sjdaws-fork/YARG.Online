@@ -14,6 +14,7 @@ public sealed record Lobby(
     int MaxPlayers,
     DateTimeOffset CreatedAt,
     int SharedSongCount,
+    bool IsPublic = true,
     LobbyStatus Status = LobbyStatus.SongSelect,
     DateTimeOffset? SongStartedAt = null,
     int? SongDurationMs = null);
