@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Threading;
 using LiteNetLib;
 using YARG.Online.Game.Contracts.Packets;
 
@@ -164,9 +163,10 @@ public sealed class GameSessionManager
     }
 
     /// <summary>
-    /// Marks the peer as having reached end-of-chart. Returns whether this was the first completion
-    /// in the session (so the caller can start the straggler timer) and whether all peers are now
-    /// done (so the caller broadcasts GameEnd).
+    /// Marks the peer as having reached end-of-chart. Returns whether all peers are now done
+    /// (so the caller broadcasts GameEnd). A disconnected peer is implicitly out and doesn't
+    /// block end-of-game — the dropped peer's <see cref="RemovePeer"/> removes them from both
+    /// Peers and CompletedPeers, so the "all done" check sees the trimmed set.
     /// </summary>
     public bool TryMarkCompleted(int peerId, out CompletionResult result)
     {
@@ -190,14 +190,6 @@ public sealed class GameSessionManager
                 return false;
             }
 
-            bool wasFirst = session.FirstCompletionAt is null;
-            if (wasFirst)
-            {
-                session.FirstCompletionAt = DateTimeOffset.UtcNow;
-            }
-
-            // All currently-connected peers must have completed (a disconnected peer is implicitly
-            // out and shouldn't block end-of-game).
             bool allDone = session.CompletedPeers.Count >= session.Peers.Count;
             if (allDone)
             {
@@ -205,7 +197,6 @@ public sealed class GameSessionManager
             }
 
             result = new CompletionResult(
-                WasFirstCompletion: wasFirst,
                 ReadyToEnd: allDone,
                 LobbyId: lobbyId,
                 Peers: allDone ? SnapshotPeers(session) : Array.Empty<NetPeer>());
@@ -214,7 +205,9 @@ public sealed class GameSessionManager
     }
 
     /// <summary>
-    /// Used by the straggler timer to force-end a session if not all peers have reported done.
+    /// Force-end a session without waiting for natural completion. Used by the chart-hash-mismatch
+    /// abort path in <see cref="TryClaimStart"/>: when peers submit incompatible chart hashes the
+    /// session can't proceed, so we mark it ended and return the peer list for the GameEnd broadcast.
     /// Returns null if the session was already ended (or never existed).
     /// </summary>
     public CompletionResult? ForceEndSession(string lobbyId)
@@ -233,7 +226,6 @@ public sealed class GameSessionManager
 
             session.EndBroadcast = true;
             return new CompletionResult(
-                WasFirstCompletion: false,
                 ReadyToEnd: true,
                 LobbyId: lobbyId,
                 Peers: SnapshotPeers(session));
@@ -251,11 +243,6 @@ public sealed class GameSessionManager
             return;
         }
 
-        // Cancel any in-flight straggler timer for this session so it can't
-        // race with a *later* session that reuses lobbyId for the next song.
-        try { session.StragglerCts.Cancel(); } catch { }
-        session.StragglerCts.Dispose();
-
         lock (session.Gate)
         {
             foreach (var peerId in session.Peers.Keys)
@@ -263,16 +250,6 @@ public sealed class GameSessionManager
                 _peerToLobby.TryRemove(peerId, out _);
             }
         }
-    }
-
-    /// <summary>
-    /// Returns the cancellation token tied to the current session for <paramref name="lobbyId"/>.
-    /// </summary>
-    public CancellationToken GetStragglerCancellation(string lobbyId)
-    {
-        if (!_sessions.TryGetValue(lobbyId, out var session)) return CancellationToken.None;
-        try { return session.StragglerCts.Token; }
-        catch (ObjectDisposedException) { return CancellationToken.None; }
     }
 
     /// <summary>
@@ -331,11 +308,7 @@ public sealed class GameSessionManager
 
             if (session.Peers.Count == 0)
             {
-                if (_sessions.TryRemove(lobbyId, out var removed))
-                {
-                    try { removed.StragglerCts.Cancel(); } catch { }
-                    removed.StragglerCts.Dispose();
-                }
+                _sessions.TryRemove(lobbyId, out _);
                 return new DisconnectResult(lobbyId, Array.Empty<NetPeer>(), false, false);
             }
 
@@ -461,11 +434,9 @@ public sealed class GameSessionManager
         public Dictionary<int, SetLoadoutPacket> Loadouts { get; } = new();
         public HashSet<int> ReadyPeers { get; } = new();
         public HashSet<int> CompletedPeers { get; } = new();
-        public DateTimeOffset? FirstCompletionAt { get; set; }
         public bool Started { get; set; }
         public bool CueBroadcast { get; set; }
         public bool EndBroadcast { get; set; }
-        public CancellationTokenSource StragglerCts { get; } = new();
         public int? DurationMs { get; set; }
         public object Gate { get; } = new();
     }
@@ -481,7 +452,6 @@ public readonly record struct TryStartResult(
 public readonly record struct CueReadyResult(bool ReadyToCue, IReadOnlyList<NetPeer> Peers);
 
 public readonly record struct CompletionResult(
-    bool WasFirstCompletion,
     bool ReadyToEnd,
     string LobbyId,
     IReadOnlyList<NetPeer> Peers);

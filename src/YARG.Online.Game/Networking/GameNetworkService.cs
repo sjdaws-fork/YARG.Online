@@ -19,11 +19,6 @@ public sealed class GameNetworkService : BackgroundService
     private static readonly TimeSpan StartCueLead = TimeSpan.FromMilliseconds(3000);
     private const int StartCueCountdownMs = 3000;
 
-    // Once the first peer reports GameComplete, give the rest this long to finish before
-    // force-ending the session. Covers crashed/lagged clients without leaving the live ones in
-    // limbo forever.
-    private static readonly TimeSpan StragglerTimeout = TimeSpan.FromSeconds(30);
-
     private readonly NetworkOptions _options;
     private readonly IGameJwtValidator _validator;
     private readonly AuthenticatedPeerRegistry _registry;
@@ -69,9 +64,7 @@ public sealed class GameNetworkService : BackgroundService
         var listener = new EventBasedNetListener();
         _manager = new NetManager(listener)
         {
-            UnsyncedEvents = true,
-            PingInterval = 1000,
-            DisconnectTimeout = 15000,
+            UnsyncedEvents = true
         };
 
         listener.ConnectionRequestEvent += OnConnectionRequest;
@@ -304,7 +297,13 @@ public sealed class GameNetworkService : BackgroundService
         GamePacketWriter.Write(writer, PacketOpcode.GameEnd, new GameEndPacket());
         foreach (var peer in peers)
         {
-            peer.Send(writer, DeliveryMethod.ReliableOrdered);
+            try { peer.Send(writer, DeliveryMethod.ReliableOrdered); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Lobby {LobbyId}: GameEnd send to peer {PeerId} failed; continuing.",
+                    lobbyId, peer.Id);
+            }
         }
         _sessions.DisposeSession(lobbyId);
         _logger.LogInformation(
@@ -338,31 +337,6 @@ public sealed class GameNetworkService : BackgroundService
         {
             _logger.LogError(ex, "Failed to notify Lobbies of song-started for lobby {LobbyId}.", lobbyId);
         }
-    }
-
-    private void StartStragglerTimer(string lobbyId)
-    {
-        var stragglerToken = _sessions.GetStragglerCancellation(lobbyId);
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await Task.Delay(StragglerTimeout, stragglerToken);
-            }
-            catch (TaskCanceledException)
-            {
-                return;
-            }
-
-            var forced = _sessions.ForceEndSession(lobbyId);
-            if (forced is { ReadyToEnd: true, Peers: { Count: > 0 } peers })
-            {
-                _logger.LogWarning(
-                    "Lobby {LobbyId}: straggler timeout elapsed; force-ending session ({Count} peers).",
-                    lobbyId, peers.Count);
-                BroadcastGameEnd(peers, lobbyId);
-            }
-        });
     }
 
     private void OnPeerDisconnected(NetPeer peer, DisconnectInfo info)
@@ -783,14 +757,12 @@ public sealed class GameNetworkService : BackgroundService
         }
 
         _logger.LogInformation(
-            "GameComplete received from {UserId} for lobby {LobbyId} (first={First}, allDone={AllDone}).",
-            identity.UserId, identity.LobbyId, done.WasFirstCompletion, done.ReadyToEnd);
+            "GameComplete received from {UserId} for lobby {LobbyId} (allDone={AllDone}).",
+            identity.UserId, identity.LobbyId, done.ReadyToEnd);
 
-        if (done.WasFirstCompletion && !done.ReadyToEnd)
-        {
-            StartStragglerTimer(done.LobbyId);
-        }
-
+        // When not all peers have completed yet, we don't need a backstop timer: a peer
+        // that goes silent will hit LiteNetLib's DisconnectTimeout, and the resulting
+        // RemovePeer trims them out so the remaining peers' completion checks unblock.
         if (done.ReadyToEnd)
         {
             BroadcastGameEnd(done.Peers, done.LobbyId);
