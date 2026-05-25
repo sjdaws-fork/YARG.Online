@@ -1,0 +1,22 @@
+{{- if .Values.monitoring.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: lobbies
+  labels:
+    app.kubernetes.io/name: yarg-online-lobbies
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    # The kube-prometheus-stack release is named "monitoring"; Prometheus
+    # discovers ServiceMonitors via release=monitoring across all namespaces.
+    release: monitoring
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: yarg-online-lobbies
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.monitoring.serviceMonitor.interval | default "15s" }}
+      scrapeTimeout: {{ .Values.monitoring.serviceMonitor.scrapeTimeout | default "10s" }}
+{{- end }}

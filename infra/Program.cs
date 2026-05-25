@@ -2,11 +2,15 @@ using Pulumi;
 using Pulumi.Kubernetes;
 using Pulumi.Kubernetes.Core.V1;
 using Pulumi.Kubernetes.Helm.V4;
+using Pulumi.Kubernetes.Types.Inputs.Apps.V1;
 using Pulumi.Kubernetes.Types.Inputs.Core.V1;
 using Pulumi.Kubernetes.Types.Inputs.Helm.V4;
 using Pulumi.Kubernetes.Types.Inputs.Meta.V1;
 using Pulumi.Kubernetes.Yaml;
 using YARG.Online.Infrastructure;
+using Cloudflare = Pulumi.Cloudflare;
+using Random = Pulumi.Random;
+using K8sDeployment = Pulumi.Kubernetes.Apps.V1.Deployment;
 using HelmRelease = Pulumi.Kubernetes.Helm.V3.Release;
 using HelmReleaseArgs = Pulumi.Kubernetes.Types.Inputs.Helm.V3.ReleaseArgs;
 using V3RepositoryOptsArgs = Pulumi.Kubernetes.Types.Inputs.Helm.V3.RepositoryOptsArgs;
@@ -38,6 +42,57 @@ return await Deployment.RunAsync(() =>
     }
 
     var providerOpts = new CustomResourceOptions { Provider = k8s };
+
+    // Pin control-plane workloads to the `system` node pool on OCI. Local k3s has no
+    // such label, so leave the selector null there — matches MonitoringProfile.Light,
+    // which skips its nodeSelector to avoid Pending pods on a single-node cluster.
+    var systemNodeSelector = provisionOke
+        ? new Dictionary<string, object> { ["workload"] = "system" }
+        : null;
+
+    // --- kube-prometheus-stack ---
+    //
+    // Installed first so its Prometheus Operator CRDs (ServiceMonitor, PodMonitor,
+    // etc.) exist before any other chart tries to create those resources. Agones,
+    // for example, ships its own ServiceMonitor when metrics.serviceMonitor.enabled
+    // is true and would fail with "resource mapping not found" on a fresh cluster
+    // if it raced the monitoring install.
+    //
+    // Local k3s uses the `local-path` StorageClass and the small Light profile;
+    // oci-prod uses `oci-bv` and the Full profile pinned to the workload=system
+    // node pool. Resource shapes and PVC sizes live in MonitoringProfile
+    // (Monitoring.cs), not Pulumi config.
+    var monitoringNamespaceName = PrefixedNs("monitoring");
+    var monitoringNs = new Namespace("monitoring", new NamespaceArgs
+    {
+        Metadata = new ObjectMetaArgs { Name = monitoringNamespaceName },
+    }, providerOpts);
+
+    var monitoringProfile = provisionOke ? MonitoringProfile.Full : MonitoringProfile.Light;
+    var monitoringStorageClass = config.Get("monitoringStorageClass")
+        ?? (provisionOke ? "oci-bv" : "local-path");
+    var kubePrometheusStackVersion = config.Get("kubePrometheusStackVersion") ?? "85.2.2";
+
+    var monitoring = new HelmRelease("kube-prometheus-stack", new HelmReleaseArgs
+    {
+        // The release name is referenced by the lobbies/game ServiceMonitor/PodMonitor
+        // selectors (release=monitoring) and by the in-cluster Service DNS names
+        // (monitoring-grafana, monitoring-kube-prometheus-prometheus, …). Don't
+        // rename without updating those callers.
+        Name = "monitoring",
+        Chart = "kube-prometheus-stack",
+        Version = kubePrometheusStackVersion,
+        RepositoryOpts = new V3RepositoryOptsArgs
+        {
+            Repo = "https://prometheus-community.github.io/helm-charts",
+        },
+        Namespace = monitoringNamespaceName,
+        Values = Monitoring.BuildValues(monitoringProfile, monitoringStorageClass),
+    }, new CustomResourceOptions
+    {
+        Provider = k8s,
+        DependsOn = { monitoringNs },
+    });
 
     var envoyGatewayNamespaceName = PrefixedNs("envoy-gateway-system");
 
@@ -83,12 +138,35 @@ return await Deployment.RunAsync(() =>
     // For OCI registries the full `oci://...` URL goes in `Chart` directly. Using
     // `RepositoryOpts.Repo` triggers a `helm repo add` flow that isn't valid for OCI
     // (OCI bundles registry + chart in one reference).
+    var envoyGatewayValues = new Dictionary<string, object>();
+    if (systemNodeSelector is not null)
+    {
+        envoyGatewayValues["deployment"] = new Dictionary<string, object>
+        {
+            ["pod"] = new Dictionary<string, object>
+            {
+                ["nodeSelector"] = systemNodeSelector,
+            },
+        };
+        // certgen is a Helm pre-install Job that creates the controller's TLS
+        // bootstrap Secret. Pin it too so it doesn't transiently consume capacity
+        // on a workload node pool during install.
+        envoyGatewayValues["certgen"] = new Dictionary<string, object>
+        {
+            ["job"] = new Dictionary<string, object>
+            {
+                ["nodeSelector"] = systemNodeSelector,
+            },
+        };
+    }
+
     var controller = new HelmRelease("envoy-gateway", new HelmReleaseArgs
     {
         Chart = "oci://docker.io/envoyproxy/gateway-helm",
         Version = envoyGatewayVersion,
         Namespace = ns.Metadata.Apply(m => m.Name!),
         SkipCrds = true,
+        Values = envoyGatewayValues,
     }, new CustomResourceOptions
     {
         Provider = k8s,
@@ -109,6 +187,23 @@ return await Deployment.RunAsync(() =>
     // Release covers both. Single-replica controller/allocator keeps the footprint
     // small. ClusterIP for the allocator since the lobby calls Agones in-cluster via
     // the K8s API. Ping is disabled — clients don't query Agones in our architecture.
+    var agonesController = new Dictionary<string, object> { ["replicas"] = 1 };
+    var agonesAllocator = new Dictionary<string, object>
+    {
+        ["replicas"] = 1,
+        ["service"] = new Dictionary<string, object>
+        {
+            ["serviceType"] = "ClusterIP",
+        },
+    };
+    var agonesExtensions = new Dictionary<string, object>();
+    if (systemNodeSelector is not null)
+    {
+        agonesController["nodeSelector"] = systemNodeSelector;
+        agonesAllocator["nodeSelector"] = systemNodeSelector;
+        agonesExtensions["nodeSelector"] = systemNodeSelector;
+    }
+
     var agones = new HelmRelease("agones", new HelmReleaseArgs
     {
         Name = "agones",
@@ -123,28 +218,34 @@ return await Deployment.RunAsync(() =>
         {
             ["agones"] = new Dictionary<string, object>
             {
-                ["controller"] = new Dictionary<string, object>
-                {
-                    ["replicas"] = 1,
-                },
-                ["allocator"] = new Dictionary<string, object>
-                {
-                    ["replicas"] = 1,
-                    ["service"] = new Dictionary<string, object>
-                    {
-                        ["serviceType"] = "ClusterIP",
-                    },
-                },
+                ["controller"] = agonesController,
+                ["allocator"] = agonesAllocator,
+                ["extensions"] = agonesExtensions,
                 ["ping"] = new Dictionary<string, object>
                 {
                     ["install"] = false,
+                },
+                // The Agones chart ships its own ServiceMonitor (covers
+                // controller, allocator, extensions). Toggle it on so the
+                // kube-prometheus-stack release scrapes Agones automatically —
+                // no extra resources to maintain on our side.
+                ["metrics"] = new Dictionary<string, object>
+                {
+                    ["serviceMonitor"] = new Dictionary<string, object>
+                    {
+                        ["enabled"] = true,
+                        ["interval"] = "30s",
+                    },
                 },
             },
         },
     }, new CustomResourceOptions
     {
         Provider = k8s,
-        DependsOn = { agonesNs },
+        // monitoring must be in place before Agones — the chart's metrics
+        // ServiceMonitor depends on the Prometheus Operator CRDs that
+        // kube-prometheus-stack installs.
+        DependsOn = { agonesNs, monitoring },
     });
 
     // On OCI, an EnvoyProxy config tells the OKE cloud-controller to expose the Gateway
@@ -167,6 +268,20 @@ return await Deployment.RunAsync(() =>
                     ["type"] = "Kubernetes",
                     ["kubernetes"] = new Dictionary<string, object>
                     {
+                        // Pin the data-plane Envoy pods to the system pool. With
+                        // externalTrafficPolicy: Local the NLB will only forward to
+                        // nodes running an Envoy pod, so this also concentrates
+                        // ingress on `system` — fine while Envoy is single-replica.
+                        ["envoyDeployment"] = new Dictionary<string, object>
+                        {
+                            ["pod"] = new Dictionary<string, object>
+                            {
+                                ["nodeSelector"] = new Dictionary<string, object>
+                                {
+                                    ["workload"] = "system",
+                                },
+                            },
+                        },
                         ["envoyService"] = new Dictionary<string, object>
                         {
                             ["type"] = "LoadBalancer",
@@ -451,12 +566,354 @@ spec:
         }
     }
 
+    // Dashboards (downloaded by Download-Dashboards.ps1) become labeled
+    // ConfigMaps in the monitoring namespace; the Grafana sidecar picks them
+    // up automatically. If the directory is empty (a developer hasn't run the
+    // download script), Grafana still has its chart-bundled dashboards.
+    Monitoring.InstallDashboards(k8s, monitoringNamespaceName, monitoring);
+
+    // Envoy Gateway's upstream chart only emits prometheus.io/scrape
+    // annotations on its pods — kube-prometheus-stack doesn't honor those.
+    // Bridge with proper ServiceMonitor / PodMonitor resources.
+    Monitoring.InstallEnvoyGatewayMonitors(
+        k8s, envoyGatewayNamespaceName, monitoringNamespaceName, monitoring);
+
+    if (provisionOke)
+    {
+        // --- Cloudflare Tunnel + cloudflared (oci-prod only) ---
+        //
+        // Outbound-only path into Grafana. Cloudflare Access (configured once
+        // out-of-band in the Zero Trust dashboard) authenticates at the edge.
+        // Reuses the existing cloudflareApiToken used for external-dns; that
+        // token's scope must include Account.Cloudflare Tunnel:Edit and
+        // Account Settings:Read in addition to its existing Zone.DNS:Edit.
+        var cfToken = config.GetSecret("cloudflareApiToken");
+        var cfAccountId = config.Get("cloudflareAccountId");
+        var cfZoneId = config.Get("cloudflareZoneId");
+        var grafanaHostname = config.Get("grafanaHostname");
+
+        if (cfToken is not null && cfAccountId is not null && cfZoneId is not null
+            && grafanaHostname is not null)
+        {
+            var cfProvider = new Cloudflare.Provider("cloudflare", new Cloudflare.ProviderArgs
+            {
+                ApiToken = cfToken,
+            });
+            var cfOpts = new CustomResourceOptions { Provider = cfProvider };
+            // Invokes (data sources) need their own options bag — CustomResourceOptions
+            // applies to resource creations only, so Invoke calls fall through to a
+            // default Cloudflare provider with no API token unless explicitly routed.
+            var cfInvokeOpts = new InvokeOptions { Provider = cfProvider };
+
+            // Tunnel secret is the password Cloudflare uses to derive the
+            // connector token. Generated once via Pulumi.Random so it stays
+            // stable across `pulumi up` runs and the tunnel isn't recreated.
+            // Base64 length 44 = 32 raw bytes, matching what cloudflared expects.
+            var tunnelSecretBytes = new Random.RandomBytes("grafana-tunnel-secret",
+                new Random.RandomBytesArgs { Length = 32 });
+            var tunnelSecret = tunnelSecretBytes.Base64;
+
+            var tunnel = new Cloudflare.ZeroTrustTunnelCloudflared("grafana-tunnel",
+                new Cloudflare.ZeroTrustTunnelCloudflaredArgs
+                {
+                    AccountId = cfAccountId,
+                    Name = string.IsNullOrEmpty(namespacePrefix)
+                        ? "grafana"
+                        : $"{namespacePrefix}-grafana",
+                    // Remote-managed config — the ingress rules below live in
+                    // Cloudflare's API, not in a local config.yaml on the connector.
+                    ConfigSrc = "cloudflare",
+                    TunnelSecret = tunnelSecret,
+                }, cfOpts);
+
+            _ = new Cloudflare.ZeroTrustTunnelCloudflaredConfig("grafana-tunnel-config",
+                new Cloudflare.ZeroTrustTunnelCloudflaredConfigArgs
+                {
+                    AccountId = cfAccountId,
+                    TunnelId = tunnel.Id,
+                    Config = new Cloudflare.Inputs.ZeroTrustTunnelCloudflaredConfigConfigArgs
+                    {
+                        Ingresses =
+                        {
+                            new Cloudflare.Inputs.ZeroTrustTunnelCloudflaredConfigConfigIngressArgs
+                            {
+                                Hostname = grafanaHostname,
+                                Service = $"http://monitoring-grafana.{monitoringNamespaceName}.svc.cluster.local:80",
+                            },
+                            // Cloudflare requires a catch-all rule at the end —
+                            // anything that doesn't match the hostname above
+                            // returns a 404.
+                            new Cloudflare.Inputs.ZeroTrustTunnelCloudflaredConfigConfigIngressArgs
+                            {
+                                Service = "http_status:404",
+                            },
+                        },
+                    },
+                }, cfOpts);
+
+            _ = new Cloudflare.DnsRecord("grafana-dns", new Cloudflare.DnsRecordArgs
+            {
+                ZoneId = cfZoneId,
+                Name = grafanaHostname,
+                Type = "CNAME",
+                Content = Output.Format($"{tunnel.Id}.cfargotunnel.com"),
+                Ttl = 1,            // Cloudflare interprets 1 as Auto.
+                Proxied = true,
+            }, cfOpts);
+
+            // Connector token — derived from the tunnel id + secret. Read it
+            // server-side rather than recomputing the HMAC locally.
+            var tunnelToken = Cloudflare.GetZeroTrustTunnelCloudflaredToken.Invoke(
+                new Cloudflare.GetZeroTrustTunnelCloudflaredTokenInvokeArgs
+                {
+                    AccountId = cfAccountId,
+                    TunnelId = tunnel.Id,
+                }, cfInvokeOpts).Apply(r => r.Token);
+
+            // --- Cloudflare Access policy for Grafana ---
+            //
+            // Without this, the tunnel reaches Grafana directly and Grafana itself
+            // runs as anonymous Admin ([Monitoring.cs] auth.anonymous.enabled) — so
+            // anyone who knows the hostname has admin access. The Access app puts
+            // Cloudflare's identity gate in front of the tunnel; only the listed
+            // emails can authenticate (via One-Time PIN sent to that address).
+            //
+            // Set the allowlist with, e.g.:
+            //   pulumi config set --stack oci-prod --path "grafanaAccessEmails[0]" me@example.com
+            // Without it, Pulumi logs a warning and the tunnel stays unprotected.
+            var grafanaAccessEmails = config.GetObject<string[]>("grafanaAccessEmails");
+            if (grafanaAccessEmails is { Length: > 0 })
+            {
+                // One-Time PIN — Cloudflare auto-creates this IdP when Access is
+                // enabled on the account, and only one onetimepin connection can
+                // exist. So instead of creating a new resource (which 409s), look
+                // up the existing one and reference its ID below.
+                var otpIdpId = Cloudflare.GetZeroTrustAccessIdentityProviders.Invoke(
+                    new Cloudflare.GetZeroTrustAccessIdentityProvidersInvokeArgs
+                    {
+                        AccountId = cfAccountId,
+                    }, cfInvokeOpts).Apply(r =>
+                    {
+                        var otp = r.Results.FirstOrDefault(p => p.Type == "onetimepin");
+                        if (otp is null)
+                            throw new InvalidOperationException(
+                                "No One-Time PIN identity provider found in the Cloudflare " +
+                                "account. Enable Zero Trust Access in the dashboard first — " +
+                                "Cloudflare provisions the OTP IdP automatically on first enable.");
+                        return otp.Id;
+                    });
+
+                var grafanaIncludes = grafanaAccessEmails
+                    .Select(email => new Cloudflare.Inputs.ZeroTrustAccessApplicationPolicyIncludeArgs
+                    {
+                        Email = new Cloudflare.Inputs.ZeroTrustAccessApplicationPolicyIncludeEmailArgs
+                        {
+                            Email = email,
+                        },
+                    })
+                    .ToList();
+
+                _ = new Cloudflare.ZeroTrustAccessApplication("grafana-access",
+                    new Cloudflare.ZeroTrustAccessApplicationArgs
+                    {
+                        AccountId = cfAccountId,
+                        Name = "Grafana",
+                        Domain = grafanaHostname,
+                        Type = "self_hosted",
+                        SessionDuration = "24h",
+                        AllowedIdps = { otpIdpId },
+                        Policies =
+                        {
+                            new Cloudflare.Inputs.ZeroTrustAccessApplicationPolicyArgs
+                            {
+                                Name = "Allow listed emails",
+                                Decision = "allow",
+                                Precedence = 1,
+                                Includes = grafanaIncludes,
+                            },
+                        },
+                    }, cfOpts);
+            }
+            else
+            {
+                Pulumi.Log.Warn(
+                    "grafanaAccessEmails is unset — Cloudflare Access is NOT configured " +
+                    "and the Grafana tunnel will be reachable by anyone who knows the hostname. " +
+                    "Run: pulumi config set --stack oci-prod --path \"grafanaAccessEmails[0]\" <your-email>");
+            }
+
+            // In-cluster cloudflared agent.
+            var cloudflaredNamespaceName = PrefixedNs("cloudflared");
+            var cloudflaredNs = new Namespace("cloudflared", new NamespaceArgs
+            {
+                Metadata = new ObjectMetaArgs { Name = cloudflaredNamespaceName },
+            }, providerOpts);
+
+            var cloudflaredSecret = new Secret("cloudflared-token", new SecretArgs
+            {
+                Metadata = new ObjectMetaArgs
+                {
+                    Name = "cloudflared-token",
+                    Namespace = cloudflaredNamespaceName,
+                },
+                StringData = { ["token"] = tunnelToken },
+            }, new CustomResourceOptions { Provider = k8s, DependsOn = { cloudflaredNs } });
+
+            _ = new K8sDeployment("cloudflared", new DeploymentArgs
+            {
+                Metadata = new ObjectMetaArgs
+                {
+                    Name = "cloudflared",
+                    Namespace = cloudflaredNamespaceName,
+                },
+                Spec = new DeploymentSpecArgs
+                {
+                    // Single replica — each cloudflared instance opens 4 connections
+                    // to Cloudflare's edge by default, which is already redundant
+                    // across edge data centers. A second replica only buys us
+                    // pod-level redundancy (kubelet restart), which isn't worth the
+                    // extra resource overhead on a one-node system pool.
+                    Replicas = 1,
+                    Selector = new LabelSelectorArgs
+                    {
+                        MatchLabels = { ["app"] = "cloudflared" },
+                    },
+                    Template = new PodTemplateSpecArgs
+                    {
+                        Metadata = new ObjectMetaArgs
+                        {
+                            Labels = { ["app"] = "cloudflared" },
+                        },
+                        Spec = new PodSpecArgs
+                        {
+                            NodeSelector = { ["workload"] = "system" },
+                            Containers =
+                            {
+                                new ContainerArgs
+                                {
+                                    Name = "cloudflared",
+                                    // OKE worker nodes run with short-name mode enforcing, so
+                                    // the image reference must be fully qualified — short
+                                    // names like "cloudflare/cloudflared" get rejected as
+                                    // ambiguous instead of defaulting to docker.io.
+                                    Image = "docker.io/cloudflare/cloudflared:latest",
+                                    // cloudflared auto-reads TUNNEL_TOKEN from the env var —
+                                    // no need to pass it on the command line. --metrics exposes
+                                    // an HTTP endpoint on :2000 that backs the /ready liveness
+                                    // probe so kubelet can restart a stuck tunnel.
+                                    Args =
+                                    {
+                                        "tunnel",
+                                        "--no-autoupdate",
+                                        "--loglevel", "info",
+                                        "--metrics", "0.0.0.0:2000",
+                                        "run",
+                                    },
+                                    Env =
+                                    {
+                                        new EnvVarArgs
+                                        {
+                                            Name = "TUNNEL_TOKEN",
+                                            ValueFrom = new EnvVarSourceArgs
+                                            {
+                                                SecretKeyRef = new SecretKeySelectorArgs
+                                                {
+                                                    Name = "cloudflared-token",
+                                                    Key = "token",
+                                                },
+                                            },
+                                        },
+                                    },
+                                    Ports =
+                                    {
+                                        new ContainerPortArgs
+                                        {
+                                            Name = "metrics",
+                                            ContainerPortValue = 2000,
+                                        },
+                                    },
+                                    LivenessProbe = new ProbeArgs
+                                    {
+                                        HttpGet = new HTTPGetActionArgs
+                                        {
+                                            Path = "/ready",
+                                            Port = 2000,
+                                        },
+                                        InitialDelaySeconds = 10,
+                                        PeriodSeconds = 10,
+                                        FailureThreshold = 1,
+                                    },
+                                    Resources = new ResourceRequirementsArgs
+                                    {
+                                        Requests =
+                                        {
+                                            ["cpu"] = "50m",
+                                            ["memory"] = "64Mi",
+                                        },
+                                        Limits =
+                                        {
+                                            ["memory"] = "128Mi",
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            }, new CustomResourceOptions { Provider = k8s, DependsOn = { cloudflaredSecret } });
+        }
+    }
+    else
+    {
+        // --- Grafana HTTPRoute (local only) ---
+        //
+        // On local, expose Grafana through the same `main` Envoy Gateway that
+        // serves the lobbies. No cloudflared, no auth — LAN trust is the
+        // boundary.
+        var grafanaHostname = config.Get("grafanaHostname");
+        if (grafanaHostname is not null)
+        {
+            var grafanaRouteYaml = $@"
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: grafana
+  namespace: {monitoringNamespaceName}
+spec:
+  parentRefs:
+    - name: main
+      namespace: {envoyGatewayNamespaceName}
+  hostnames:
+    - {grafanaHostname}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: monitoring-grafana
+          port: 80
+";
+
+            _ = new ConfigGroup("grafana-route", new ConfigGroupArgs
+            {
+                Yaml = grafanaRouteYaml,
+            }, new ComponentResourceOptions
+            {
+                Provider = k8s,
+                DependsOn = { monitoring, gateway },
+            });
+        }
+    }
+
     return new Dictionary<string, object?>
     {
         ["namespace"] = ns.Metadata.Apply(m => m.Name!),
         ["envoyGatewayVersion"] = envoyGatewayVersion,
         ["agonesNamespace"] = agonesNs.Metadata.Apply(m => m.Name!),
         ["agonesVersion"] = agonesVersion,
+        ["monitoringNamespace"] = monitoringNamespaceName,
+        ["kubePrometheusStackVersion"] = kubePrometheusStackVersion,
         ["registryEnabled"] = isLocal,
         ["registryHostname"] = isLocal ? (object?)registryHostname : null,
         ["clusterId"] = oci?.ClusterId,

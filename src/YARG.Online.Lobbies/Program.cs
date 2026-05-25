@@ -10,6 +10,8 @@ using Microsoft.AspNetCore.Http.Connections;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
 using YARG.Online.Lobbies.Contracts.Hubs;
 using YARG.Online.Lobbies.Allocation;
 using YARG.Online.Lobbies.Auth;
@@ -27,6 +29,23 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 
 builder.Services.AddProblemDetails();
 builder.Services.AddSingleton(TimeProvider.System);
+
+// OpenTelemetry metrics. The Prometheus exporter exposes /metrics on the shared
+// Kestrel port; the in-cluster ServiceMonitor scrapes it. Anonymous — boundary
+// is the in-cluster Service.
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(r => r.AddService("yarg-online-lobbies"))
+    .WithMetrics(m => m
+        .AddMeter("Microsoft.AspNetCore.Hosting")
+        .AddMeter("Microsoft.AspNetCore.Server.Kestrel")
+        // SignalR runs on top of Microsoft.AspNetCore.Http.Connections; this
+        // exposes WebSocket connection counts and durations.
+        .AddMeter("Microsoft.AspNetCore.Http.Connections")
+        .AddMeter("System.Net.Http")
+        .AddAspNetCoreInstrumentation()
+        .AddHttpClientInstrumentation()
+        .AddRuntimeInstrumentation()
+        .AddPrometheusExporter());
 
 builder.Services.AddOptions<AuthOptions>()
     .Bind(builder.Configuration.GetSection(AuthOptions.SectionName))
@@ -231,6 +250,9 @@ app.MapOpenApi("/openapi/v1.json");
 // Probes — these stay anonymous so kubelet can reach them without a JWT.
 app.MapHealthChecks("/healthz").AllowAnonymous();
 app.MapHealthChecks("/readyz").AllowAnonymous();
+
+// Prometheus scrape endpoint — anonymous; cluster-internal traffic only.
+app.MapPrometheusScrapingEndpoint("/metrics").AllowAnonymous();
 
 app.MapAuthEndpoints(app.Environment);
 app.MapGameLifecycleEndpoints();

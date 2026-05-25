@@ -1,0 +1,24 @@
+{{- if .Values.monitoring.podMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: game
+  labels:
+    app.kubernetes.io/name: yarg-online-game
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    # The kube-prometheus-stack release is named "monitoring"; Prometheus
+    # discovers PodMonitors via release=monitoring across all namespaces.
+    release: monitoring
+spec:
+  # Agones GameServer pods aren't behind a stable Service, so we scrape pods
+  # directly. Agones propagates Fleet template labels onto every game pod.
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: yarg-online-game
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.monitoring.podMonitor.interval | default "15s" }}
+      scrapeTimeout: {{ .Values.monitoring.podMonitor.scrapeTimeout | default "10s" }}
+{{- end }}

@@ -14,8 +14,11 @@ COPY . .
 RUN dotnet publish src/YARG.Online.Game/YARG.Online.Game.csproj \
     -c Debug -o /app/publish --no-restore
 
-FROM mcr.microsoft.com/dotnet/runtime:9.0 AS runtime
+# aspnet (not runtime) image — the game host runs Kestrel for the /metrics + /healthz
+# endpoints alongside the UDP listener.
+FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS runtime
 WORKDIR /app
 COPY --from=build /app/publish .
 EXPOSE 9050/udp
+EXPOSE 9091/tcp
 ENTRYPOINT ["dotnet", "YARG.Online.Game.dll"]

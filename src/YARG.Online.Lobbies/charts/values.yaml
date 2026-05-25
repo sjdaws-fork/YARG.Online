@@ -46,6 +46,18 @@ agones:
   fleetName: game-fleet
   slotsKey: slots
 
+# Prometheus ServiceMonitor. The /metrics endpoint shares the existing http
+# port (5230); no extra service port required. Disabled when the cluster has
+# no Prometheus Operator (the CRD won't be installed). `namespace` is the
+# kube-prometheus-stack release namespace — the NetworkPolicy opens the http
+# port to it so Prometheus can scrape.
+monitoring:
+  namespace: yarg-online-local-monitoring
+  serviceMonitor:
+    enabled: true
+    interval: 15s
+    scrapeTimeout: 10s
+
 # Populated by values.local.yaml (gitignored). Each key/value is rendered into
 # a Secret consumed by the deployment via envFrom.
 secrets: {}

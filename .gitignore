@@ -42,3 +42,7 @@ src/YARG.Online.Game/charts/values.local.yaml
 # Helm oci-prod values (production secrets)
 src/YARG.Online.Lobbies/charts/values.oci-prod.secrets.yaml
 src/YARG.Online.Game/charts/values.oci-prod.secrets.yaml
+
+# Grafana dashboard JSON, fetched by Download-Dashboards.ps1
+infra/dashboards/*.json
+!infra/dashboards/.keep

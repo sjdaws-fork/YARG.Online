@@ -24,6 +24,9 @@ httpRoute:
 networkPolicy:
   gameServerNamespace: yarg-online-game
 
+monitoring:
+  namespace: yarg-online-monitoring
+
 agones:
   enabled: true
   gameServerNamespace: yarg-online-game

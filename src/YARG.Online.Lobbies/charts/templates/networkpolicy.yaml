@@ -28,6 +28,19 @@ spec:
       ports:
         - port: {{ .Values.service.port }}
           protocol: TCP
+    {{- if .Values.monitoring.serviceMonitor.enabled }}
+    # Prometheus needs to reach the shared HTTP port to scrape /metrics. We
+    # accept the small surface-area exposure: anything running in the
+    # monitoring namespace can reach any /api or /hubs path. The namespace is
+    # cluster-controlled and only kube-prometheus-stack lives there.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.monitoring.namespace }}
+      ports:
+        - port: {{ .Values.service.port }}
+          protocol: TCP
+    {{- end }}
 ---
 # Internal Gateway ingress: only Agones game-server pods may open connections to
 # the internal Gateway's Envoy pods. This is the "only callable by game servers"

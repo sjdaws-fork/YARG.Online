@@ -1,14 +1,32 @@
 using System.Text;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
 using YARG.Online.Game.Agones;
 using YARG.Online.Game.Auth;
 using YARG.Online.Game.Lobbies;
 using YARG.Online.Game.Networking;
+using YARG.Online.Game.Observability;
 
-var builder = Host.CreateApplicationBuilder(args);
+// WebApplication so we can host a tiny Kestrel listener for /metrics + /healthz
+// alongside the UDP GameNetworkService. The UDP listener lives on port 9050
+// (LiteNetLib); Kestrel binds to a separate port for observability only.
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddOptions<ObservabilityOptions>()
+    .Bind(builder.Configuration.GetSection(ObservabilityOptions.SectionName))
+    .Validate(o => o.MetricsPort is > 0 and < 65536,
+        "Observability:MetricsPort must be in (0, 65536).")
+    .ValidateOnStart();
+
+var observability = builder.Configuration
+    .GetSection(ObservabilityOptions.SectionName)
+    .Get<ObservabilityOptions>() ?? new ObservabilityOptions();
+
+// UseUrls fully replaces the default ASPNETCORE_URLS / localhost:5000 binding —
+// the only Kestrel listener is the metrics port. The UDP game listener is a
+// separate stack inside GameNetworkService and is unaffected.
+builder.WebHost.UseUrls($"http://0.0.0.0:{observability.MetricsPort}");
 
 builder.Services.AddOptions<NetworkOptions>()
     .Bind(builder.Configuration.GetSection(NetworkOptions.SectionName));
@@ -93,4 +111,19 @@ if (agonesEnabled)
 
 builder.Services.AddHostedService<GameNetworkService>();
 
-builder.Build().Run();
+// OpenTelemetry metrics. Exposed on the Kestrel side listener only — no
+// AspNetCoreInstrumentation: there's no public HTTP surface to measure, and
+// instrumenting the scrape endpoint would pollute dashboards with its own
+// scrape requests.
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(r => r.AddService("yarg-online-game"))
+    .WithMetrics(m => m
+        .AddMeter("System.Net.Http")
+        .AddHttpClientInstrumentation()
+        .AddRuntimeInstrumentation()
+        .AddPrometheusExporter());
+
+var app = builder.Build();
+app.MapPrometheusScrapingEndpoint("/metrics");
+app.MapGet("/healthz", () => Results.Ok());
+app.Run();

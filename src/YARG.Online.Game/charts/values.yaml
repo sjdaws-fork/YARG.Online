@@ -38,6 +38,16 @@ autoscaler:
   minReplicas: 2
   maxReplicas: 10
 
+# Prometheus scrape config. metricsPort is the TCP port the game container's
+# Kestrel listener binds for /metrics + /healthz; the UDP game port is separate.
+# podMonitor.enabled requires the Prometheus Operator CRDs to be installed.
+monitoring:
+  metricsPort: 9091
+  podMonitor:
+    enabled: true
+    interval: 15s
+    scrapeTimeout: 10s
+
 # Internal-only Gateway for the lobbies game-server callbacks (ClusterIP Envoy,
 # restricted to game-server pods by NetworkPolicy). Port 80, not the pod's 5230.
 lobbies:
