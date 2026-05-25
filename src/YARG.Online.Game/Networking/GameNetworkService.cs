@@ -67,7 +67,12 @@ public sealed class GameNetworkService : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var listener = new EventBasedNetListener();
-        _manager = new NetManager(listener) { UnsyncedEvents = true };
+        _manager = new NetManager(listener)
+        {
+            UnsyncedEvents = true,
+            PingInterval = 1000,
+            DisconnectTimeout = 15000,
+        };
 
         listener.ConnectionRequestEvent += OnConnectionRequest;
         listener.PeerConnectedEvent += OnPeerConnected;
@@ -337,17 +342,23 @@ public sealed class GameNetworkService : BackgroundService
 
     private void StartStragglerTimer(string lobbyId)
     {
-        // Fire-and-forget. ForceEndSession is a no-op if all peers completed naturally before the
-        // timeout fires (or if the session was disposed via disconnect-cascade), so it's safe to
-        // leave this task running unattended.
+        var stragglerToken = _sessions.GetStragglerCancellation(lobbyId);
         _ = Task.Run(async () =>
         {
-            await Task.Delay(StragglerTimeout);
+            try
+            {
+                await Task.Delay(StragglerTimeout, stragglerToken);
+            }
+            catch (TaskCanceledException)
+            {
+                return;
+            }
+
             var forced = _sessions.ForceEndSession(lobbyId);
             if (forced is { ReadyToEnd: true, Peers: { Count: > 0 } peers })
             {
                 _logger.LogWarning(
-                    "Lobby {LobbyId}: straggler timeout elapsed — force-ending session ({Count} peers).",
+                    "Lobby {LobbyId}: straggler timeout elapsed; force-ending session ({Count} peers).",
                     lobbyId, peers.Count);
                 BroadcastGameEnd(peers, lobbyId);
             }

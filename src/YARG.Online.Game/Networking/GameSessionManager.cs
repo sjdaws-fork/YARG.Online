@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Threading;
 using LiteNetLib;
 using YARG.Online.Game.Contracts.Packets;
 
@@ -250,6 +251,11 @@ public sealed class GameSessionManager
             return;
         }
 
+        // Cancel any in-flight straggler timer for this session so it can't
+        // race with a *later* session that reuses lobbyId for the next song.
+        try { session.StragglerCts.Cancel(); } catch { }
+        session.StragglerCts.Dispose();
+
         lock (session.Gate)
         {
             foreach (var peerId in session.Peers.Keys)
@@ -257,6 +263,16 @@ public sealed class GameSessionManager
                 _peerToLobby.TryRemove(peerId, out _);
             }
         }
+    }
+
+    /// <summary>
+    /// Returns the cancellation token tied to the current session for <paramref name="lobbyId"/>.
+    /// </summary>
+    public CancellationToken GetStragglerCancellation(string lobbyId)
+    {
+        if (!_sessions.TryGetValue(lobbyId, out var session)) return CancellationToken.None;
+        try { return session.StragglerCts.Token; }
+        catch (ObjectDisposedException) { return CancellationToken.None; }
     }
 
     /// <summary>
@@ -315,7 +331,11 @@ public sealed class GameSessionManager
 
             if (session.Peers.Count == 0)
             {
-                _sessions.TryRemove(lobbyId, out _);
+                if (_sessions.TryRemove(lobbyId, out var removed))
+                {
+                    try { removed.StragglerCts.Cancel(); } catch { }
+                    removed.StragglerCts.Dispose();
+                }
                 return new DisconnectResult(lobbyId, Array.Empty<NetPeer>(), false, false);
             }
 
@@ -445,10 +465,7 @@ public sealed class GameSessionManager
         public bool Started { get; set; }
         public bool CueBroadcast { get; set; }
         public bool EndBroadcast { get; set; }
-        // Set when the host sends SongMetadataPacket. Read at cue-broadcast time and forwarded to
-        // the lobbies service so the lobby browser can render a progress bar. Null until set;
-        // GameNetworkService treats a missing value as "host never sent metadata" and falls back
-        // to 0 so the lobbies service can still record a start time.
+        public CancellationTokenSource StragglerCts { get; } = new();
         public int? DurationMs { get; set; }
         public object Gate { get; } = new();
     }
