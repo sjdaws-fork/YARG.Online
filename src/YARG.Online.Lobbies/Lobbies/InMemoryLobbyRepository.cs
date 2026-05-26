@@ -623,6 +623,15 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
                 return Task.FromResult(new BeginStartGameResultData(StartGameOutcome.QueueEmpty, null, 0));
             }
 
+            // Top-of-queue song must be in every member's library. MissingFor is
+            // maintained as members join/leave/update their library; non-empty means
+            // at least one current member doesn't have the song. Host needs to remove
+            // or replace it before starting.
+            if (entry.SongQueue[0].MissingFor.Count > 0)
+            {
+                return Task.FromResult(new BeginStartGameResultData(StartGameOutcome.SongMissingForMembers, null, 0));
+            }
+
             // Gate: every member must have signalled they're back in the
             // lobby. The flag is true by default for fresh joiners and the
             // host on lobby creation; flipped false on the previous StartGame

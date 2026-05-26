@@ -108,6 +108,10 @@ public enum StartGameOutcome
     /// screen (or haven't reported back to the lobby yet). The host must
     /// wait until every member's <c>IsBackInLobby</c> flag is true.</summary>
     PlayersStillInResults,
+    /// <summary>The top-of-queue song is missing from one or more members'
+    /// local libraries (typical when a song is queued before a member joins).
+    /// The host must remove or replace the song before starting.</summary>
+    SongMissingForMembers,
 }
 
 public sealed record StartGameMember(string UserId, string DisplayName);

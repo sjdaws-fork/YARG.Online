@@ -559,6 +559,8 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
                 throw Hub("queue_empty");
             case StartGameOutcome.PlayersStillInResults:
                 throw Hub("players_still_in_results");
+            case StartGameOutcome.SongMissingForMembers:
+                throw Hub("song_missing_for_members");
             default:
                 throw new InvalidOperationException($"Unexpected start outcome {begin.Outcome}.");
         }
