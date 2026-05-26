@@ -12,4 +12,7 @@ public sealed class LobbyOptions
 
     /// <summary>Maximum number of songs allowed in a lobby's queue at once.</summary>
     public int MaxQueueSize { get; init; } = 100;
+
+    /// <summary>Minimum client version required to connect. Null or empty disables the gate.</summary>
+    public string MinClientVersion { get; init; }
 }
