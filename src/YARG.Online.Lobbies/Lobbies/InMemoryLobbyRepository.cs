@@ -448,6 +448,7 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
                 QueuedAt: now,
                 MissingFor: missing);
             entry.SongQueue.Add(queued);
+            SyncCurrentSong(entry);
 
             return Task.FromResult(new EnqueueResult(EnqueueOutcome.Added, queued));
         }
@@ -488,6 +489,7 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
             }
 
             entry.SongQueue.RemoveAt(index);
+            SyncCurrentSong(entry);
             return Task.FromResult(new RemoveQueuedSongResult(RemoveQueuedSongOutcome.Removed, existing));
         }
     }
@@ -739,6 +741,7 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
                 SongStartedAt = null,
                 SongDurationMs = null,
             };
+            SyncCurrentSong(entry);
             return Task.FromResult(new FinishGameResultData(FinishGameOutcome.Finished, entry.Lobby, played, allocation));
         }
     }
@@ -835,6 +838,7 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
                         SongStartedAt = null,
                         SongDurationMs = null,
                     };
+                    SyncCurrentSong(entry);
 
                     return Task.FromResult(new LeaveResultsResultData(
                         LeaveResultsOutcome.MarkedBackInLobbyAndGameEnded,
@@ -940,6 +944,21 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
     }
 
     /// <summary>
+    /// Sync <c>entry.Lobby.Song</c> with the queue head's <c>SongHash</c>. Called after
+    /// every queue mutation so the browse-visible <see cref="Lobby.Song"/> (and therefore
+    /// <c>LobbyDto.Song</c>) always reflects the current top-of-queue. Browser clients
+    /// use this hash to look up the song in their local library and display its icon.
+    /// </summary>
+    private static void SyncCurrentSong(Entry entry)
+    {
+        var head = entry.SongQueue.Count > 0 ? entry.SongQueue[0].SongHash : string.Empty;
+        if (!string.Equals(entry.Lobby.Song, head, StringComparison.Ordinal))
+        {
+            entry.Lobby = entry.Lobby with { Song = head };
+        }
+    }
+
+    /// <summary>
     /// Remove a non-host member from the lobby under <c>entry.Lock</c>. Updates the queue
     /// (drops the member's entries, strips them from <c>MissingFor</c>) and the shared song
     /// library (full intersection recalc), and refreshes the <c>Lobby</c> snapshot's
@@ -1006,6 +1025,7 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
             PlayerCount = entry.Members.Count,
             SharedSongCount = entry.LobbySongLibrary.Count,
         };
+        SyncCurrentSong(entry);
 
         return (new SongLibraryDelta(added, removed), removedQueueEntries, queueUpdates);
     }

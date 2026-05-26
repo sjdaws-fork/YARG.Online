@@ -859,6 +859,13 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
             case EnqueueOutcome.Added:
                 var dto = _mapper.Map<QueuedSongDto>(result.Entry!);
                 await Clients.Group(LobbyGroup(lobbyId)).OnSongQueued(new SongQueuedEvent(lobbyId, dto));
+                // Queue head may have changed — push the updated Lobby snapshot
+                // so browser clients see the new Song hash (used for the icon).
+                var enqueuedLobby = await _repo.GetAsync(lobbyId, Context.ConnectionAborted);
+                if (enqueuedLobby is { IsPublic: true })
+                {
+                    _buffer.Enqueue(new LobbyChange(lobbyId, LobbyChangeKind.Updated, _mapper.Map<LobbyDto>(enqueuedLobby)));
+                }
                 return dto;
             case EnqueueOutcome.NotFound:
             case EnqueueOutcome.NotMember:
@@ -902,6 +909,12 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
                     {
                         RemovedByUserId = userId,
                     });
+                // Queue head may have changed — push updated snapshot for browser icon.
+                var removedLobby = await _repo.GetAsync(lobbyId, Context.ConnectionAborted);
+                if (removedLobby is { IsPublic: true })
+                {
+                    _buffer.Enqueue(new LobbyChange(lobbyId, LobbyChangeKind.Updated, _mapper.Map<LobbyDto>(removedLobby)));
+                }
                 return;
             case RemoveQueuedSongOutcome.NotFound:
             case RemoveQueuedSongOutcome.NotMember:
