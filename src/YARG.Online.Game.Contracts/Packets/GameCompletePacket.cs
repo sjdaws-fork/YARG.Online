@@ -7,7 +7,7 @@ namespace YARG.Online.Game.Contracts.Packets;
 // report. Peers that go silent without reporting are cleaned up via LiteNetLib's
 // DisconnectTimeout — the resulting RemovePeer trims them out of the completion
 // check so the remaining peers can still finish the session.
-public sealed class GameCompletePacket : INetSerializable
+public struct GameCompletePacket : INetSerializable
 {
     public void Serialize(NetDataWriter writer)
     {

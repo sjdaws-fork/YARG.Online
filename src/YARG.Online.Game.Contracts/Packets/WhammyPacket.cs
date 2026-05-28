@@ -2,7 +2,7 @@ using LiteNetLib.Utils;
 
 namespace YARG.Online.Game.Contracts.Packets;
 
-public sealed class WhammyPacket : INetSerializable
+public struct WhammyPacket : INetSerializable
 {
     public int PeerId { get; set; }
     public double SongTime { get; set; }

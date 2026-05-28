@@ -6,7 +6,7 @@ namespace YARG.Online.Game.Contracts.Packets;
 // clients mark the absent player DNF immediately rather than waiting for
 // their own connection-loss timeout, and stop expecting any more EngineInput
 // packets for that PeerId.
-public sealed class RemotePeerLeftPacket : INetSerializable
+public struct RemotePeerLeftPacket : INetSerializable
 {
     public int PeerId { get; set; }
 

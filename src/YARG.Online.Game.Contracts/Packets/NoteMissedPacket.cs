@@ -14,7 +14,7 @@ namespace YARG.Online.Game.Contracts.Packets;
 //
 // Apply semantics are set-add on the receiver: receiving the same NoteIndex
 // twice has no additional effect, which keeps redundant retransmits harmless.
-public sealed class NoteMissedPacket : INetSerializable
+public struct NoteMissedPacket : INetSerializable
 {
     public int PeerId { get; set; }
     public int NoteIndex { get; set; }

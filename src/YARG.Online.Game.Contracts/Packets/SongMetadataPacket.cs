@@ -7,7 +7,7 @@ namespace YARG.Online.Game.Contracts.Packets;
 // browser progress display). Server validates the sender is the host and
 // stores it on the session; the value is forwarded to the lobbies service
 // alongside the SongOriginUtcMs at GameStartCue time.
-public sealed class SongMetadataPacket : INetSerializable
+public struct SongMetadataPacket : INetSerializable
 {
     public int DurationMs { get; set; }
 

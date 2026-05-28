@@ -15,7 +15,7 @@ namespace YARG.Online.Game.Contracts.Packets;
 // receiver injects an activation into its mirrored engine for the sender
 // at this time. Activations arriving past the rollback window are still
 // applied (truth wins) but may not animate cleanly.
-public sealed class StarPowerActivatedPacket : INetSerializable
+public struct StarPowerActivatedPacket : INetSerializable
 {
     public int PeerId { get; set; }
     public double SongTime { get; set; }

@@ -21,7 +21,7 @@ namespace YARG.Online.Game.Contracts.Packets;
 //
 // Apply semantics on the receiver: idempotent. If the same NoteIndex
 // arrives twice the second arrival is a no-op.
-public sealed class SustainReleasedPacket : INetSerializable
+public struct SustainReleasedPacket : INetSerializable
 {
     public int PeerId { get; set; }
     public int NoteIndex { get; set; }

@@ -12,7 +12,7 @@ namespace YARG.Online.Game.Contracts.Packets;
 // SongTime is the engine-time moment the overstrum fired; receivers route
 // it through ForceOverstrum(songTime) which advances the mirror engine
 // to that point before running the engine's normal Overstrum() path.
-public sealed class OverstrumPacket : INetSerializable
+public struct OverstrumPacket : INetSerializable
 {
     public int PeerId { get; set; }
     public double SongTime { get; set; }
