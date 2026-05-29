@@ -24,14 +24,30 @@ public sealed class JwtTokenService : IJwtTokenService
         _creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
     }
 
-    public IssuedToken IssueAuthToken(string userId, string displayName)
+    public IssuedToken IssueAuthToken(string userId, string displayName, string? clientVersion)
     {
         var now = _clock.GetUtcNow();
         var expires = now + _options.AuthTokenLifetime;
 
         _logger.LogTrace(
-            "IssueAuthToken: UserId={UserId} DisplayName={DisplayName} ExpiresAt={ExpiresAt}",
-            userId, displayName, expires);
+            "IssueAuthToken: UserId={UserId} DisplayName={DisplayName} ClientVersion={ClientVersion} ExpiresAt={ExpiresAt}",
+            userId, displayName, clientVersion, expires);
+
+        var claims = new Dictionary<string, object>
+        {
+            ["sub"] = userId,
+            ["name"] = displayName,
+            ["auth_mode"] = "dev",
+        };
+
+        // TODO(version-gate): client_version is stamped here so LobbyHub.OnConnectedAsync
+        // can reject outdated clients with Context.Abort(). Remove this claim (and the
+        // hub-side check) once enough prod clients ship a build that handles the
+        // 426 ClientUpdateRequiredException at auth time.
+        if (!string.IsNullOrEmpty(clientVersion))
+        {
+            claims["client_version"] = clientVersion!;
+        }
 
         var descriptor = new SecurityTokenDescriptor
         {
@@ -41,12 +57,7 @@ public sealed class JwtTokenService : IJwtTokenService
             NotBefore = now.UtcDateTime,
             Expires = expires.UtcDateTime,
             SigningCredentials = _creds,
-            Claims = new Dictionary<string, object>
-            {
-                ["sub"] = userId,
-                ["name"] = displayName,
-                ["auth_mode"] = "dev",
-            },
+            Claims = claims,
         };
 
         return new IssuedToken(_handler.CreateToken(descriptor), expires);

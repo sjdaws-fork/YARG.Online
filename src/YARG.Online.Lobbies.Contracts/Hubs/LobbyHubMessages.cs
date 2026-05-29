@@ -71,9 +71,17 @@ public sealed record QueuedSongDto(
     string SongHash,
     string RequesterId,
     DateTimeOffset QueuedAt,
-    string[] MissingFor);
+    string[] MissingFor)
+{
+    /// <summary>Playback speed multiplier (1.0 = 100%). Applied for all members at game start.</summary>
+    public float SongSpeed { get; init; } = 1f;
+}
 
-public sealed record QueueSongArgs(string SongHash);
+public sealed record QueueSongArgs(string SongHash)
+{
+    /// <summary>Requester's chosen playback speed multiplier (1.0 = 100%). Server clamps to [0.1, 50].</summary>
+    public float SongSpeed { get; init; } = 1f;
+}
 
 public sealed record RemoveQueuedSongArgs(long Sequence);
 

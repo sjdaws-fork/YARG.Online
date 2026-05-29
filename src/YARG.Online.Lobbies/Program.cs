@@ -7,6 +7,7 @@ using k8s;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http.Connections;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
@@ -164,6 +165,10 @@ builder.Services.AddAuthorization();
 builder.Services.AddSignalR(options =>
 {
     options.MaximumReceiveMessageSize = 32 * 1024 * 1024; // 32 MB
+    // TODO(version-gate): remove this filter (and ClientVersionHubFilter.cs) once
+    // prod clients ship a build that handles the auth-time 426 (see
+    // AuthEndpoints.IssueDevToken).
+    options.AddFilter<ClientVersionHubFilter>();
 }).AddJsonProtocol(o =>
 {
     o.PayloadSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;

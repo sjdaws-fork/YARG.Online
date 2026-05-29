@@ -255,6 +255,7 @@ public interface ILobbyRepository
         string lobbyId,
         string userId,
         string songHash,
+        float songSpeed,
         DateTimeOffset now,
         CancellationToken ct);
 

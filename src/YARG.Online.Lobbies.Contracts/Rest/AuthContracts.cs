@@ -2,7 +2,7 @@ using System;
 
 namespace YARG.Online.Lobbies.Contracts.Rest;
 
-public sealed record DevAuthRequest(string Name, string ClientVersion = null);
+public sealed record DevAuthRequest(string Name, string? ClientVersion = null);
 
 public sealed record DevAuthResponse(
     string Token,

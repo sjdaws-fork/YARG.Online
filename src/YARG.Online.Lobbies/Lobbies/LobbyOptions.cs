@@ -14,5 +14,5 @@ public sealed class LobbyOptions
     public int MaxQueueSize { get; init; } = 100;
 
     /// <summary>Minimum client version required to connect. Null or empty disables the gate.</summary>
-    public string MinClientVersion { get; init; }
+    public string? MinClientVersion { get; init; }
 }

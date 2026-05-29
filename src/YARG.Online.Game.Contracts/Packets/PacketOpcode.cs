@@ -26,4 +26,8 @@ public enum PacketOpcode : byte
     // Raw input fan-out for free-play sections (BRE / drum activator fills)
     // — drives remote pad/fret flashes that would otherwise be silent.
     FreePlayInput = 24,
+    // Server -> all peers in a lobby when the loadout-ready tally changes
+    // (peer submits / clears a loadout, or a peer disconnects pre-cue).
+    // Drives the DifficultySelect "waiting for players (X/Y)" indicator.
+    LoadoutReadyCount = 25,
 }

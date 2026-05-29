@@ -50,17 +50,24 @@ public static class AuthEndpoints
         logger.LogTrace("IssueDevToken: RequestName={RequestName} ClientVersion={ClientVersion}",
             request.Name, request.ClientVersion);
 
-        // Version gate: reject clients older than MinClientVersion.
+        // TODO(version-gate): temporarily disabled at the auth layer. The
+        // currently-shipped clients in prod don't recognize the 426 and surface
+        // it as a generic "Server Unavailable" dialog, which is more confusing
+        // than letting them auth and then fail at the hub. Re-enable once enough
+        // users have updated to a build that handles ClientUpdateRequiredException.
+        // See also: LobbyHub.OnConnectedAsync for the hub-side check that's doing
+        // the actual rejection for now.
         var minVersion = options.Value.MinClientVersion;
         if (!string.IsNullOrEmpty(minVersion)
-            && !IsVersionAccepted(request.ClientVersion, minVersion))
+            && !ClientVersionGate.IsVersionAccepted(request.ClientVersion, minVersion))
         {
             logger.LogTrace(
-                "IssueDevToken rejected: ClientVersion={ClientVersion} MinClientVersion={MinClientVersion}",
+                "IssueDevToken: version gate would reject ClientVersion={ClientVersion} MinClientVersion={MinClientVersion} (auth gate disabled; hub will reject)",
                 request.ClientVersion, minVersion);
-            return TypedResults.Json(
-                new ClientVersionError("client_update_required", minVersion),
-                statusCode: StatusCodes.Status426UpgradeRequired);
+            // TODO(version-gate): re-enable by uncommenting:
+            // return TypedResults.Json(
+            //     new ClientVersionError("client_update_required", minVersion),
+            //     statusCode: StatusCodes.Status426UpgradeRequired);
         }
 
         var validation = validator.Validate(request);
@@ -75,20 +82,13 @@ public static class AuthEndpoints
 
         var displayName = request.Name.Trim();
         var userId = DevUserIdentity.Generate();
-        var issued = tokens.IssueAuthToken(userId, displayName);
+        var issued = tokens.IssueAuthToken(userId, displayName, request.ClientVersion);
 
         logger.LogTrace(
             "IssueDevToken issued: UserId={UserId} DisplayName={DisplayName} ExpiresAt={ExpiresAt}",
             userId, displayName, issued.ExpiresAt);
 
         return TypedResults.Ok(new DevAuthResponse(issued.Token, userId, displayName, issued.ExpiresAt));
-    }
-
-    /// <summary>Compare client version against minimum. Simple string comparison for now.</summary>
-    private static bool IsVersionAccepted(string clientVersion, string minVersion)
-    {
-        if (string.IsNullOrEmpty(clientVersion)) return false;
-        return string.Compare(clientVersion, minVersion, StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     // Marker type used purely as the ILogger<T> category. Keeps the category at

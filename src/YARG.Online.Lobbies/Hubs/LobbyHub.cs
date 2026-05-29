@@ -70,9 +70,16 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
     public override async Task OnConnectedAsync()
     {
         var sub = Context.User?.FindFirst("sub")?.Value;
+        var clientVersion = Context.User?.FindFirst("client_version")?.Value;
         _logger.LogTrace(
-            "OnConnectedAsync: ConnectionId={ConnectionId} Sub={Sub} Name={Name}",
-            Context.ConnectionId, sub, Context.User?.Identity?.Name);
+            "OnConnectedAsync: ConnectionId={ConnectionId} Sub={Sub} Name={Name} ClientVersion={ClientVersion}",
+            Context.ConnectionId, sub, Context.User?.Identity?.Name, clientVersion);
+
+        // TODO(version-gate): rejection happens in ClientVersionHubFilter on the
+        // first hub-method invocation (CreateLobby / EnterLobby etc.). Doing it
+        // here in OnConnectedAsync doesn't work -- the client's StartAsync has
+        // already returned by the time exceptions or Context.Abort() take effect,
+        // so the user just sees a silent disconnect with an empty browser.
 
         await Groups.AddToGroupAsync(Context.ConnectionId, BrowseGroup, Context.ConnectionAborted);
 
@@ -850,7 +857,7 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
         }
 
         var hash = args.SongHash.ToLowerInvariant();
-        var result = await _repo.EnqueueSongAsync(lobbyId, userId, hash, _clock.GetUtcNow(), Context.ConnectionAborted);
+        var result = await _repo.EnqueueSongAsync(lobbyId, userId, hash, args.SongSpeed, _clock.GetUtcNow(), Context.ConnectionAborted);
 
         _logger.LogTrace(
             "QueueSong outcome: ConnectionId={ConnectionId} LobbyId={LobbyId} UserId={UserId} SongHash={SongHash} Outcome={Outcome} Sequence={Sequence}",

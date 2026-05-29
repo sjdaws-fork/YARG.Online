@@ -404,6 +404,7 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
         string lobbyId,
         string userId,
         string songHash,
+        float songSpeed,
         DateTimeOffset now,
         CancellationToken ct)
     {
@@ -441,12 +442,15 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
                 }
             }
 
+            // Clamp speed to the same range the client popup uses ([0.1, 50] multiplier).
+            float clampedSpeed = Math.Clamp(songSpeed, 0.1f, 50f);
             var queued = new QueuedSong(
                 Sequence: entry.NextQueueSequence++,
                 SongHash: songHash,
                 RequesterId: userId,
                 QueuedAt: now,
-                MissingFor: missing);
+                MissingFor: missing,
+                SongSpeed: clampedSpeed);
             entry.SongQueue.Add(queued);
             SyncCurrentSong(entry);
 

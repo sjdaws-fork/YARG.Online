@@ -21,7 +21,7 @@ public sealed class GameSessionManager
     }
 
     /// <summary>
-    /// Store this peer's loadout selection. Idempotent per peer — re-submissions
+    /// Store this peer's loadout selection. Idempotent per peer -- re-submissions
     /// overwrite the previously-stored loadout (a player may "unready" on the
     /// DifficultySelect screen and re-Ready with different choices before the
     /// session starts). Returns false only if no session exists for the lobby
@@ -49,7 +49,7 @@ public sealed class GameSessionManager
                 return false;
             }
 
-            // Upsert — duplicates are not an error, they replace the previous loadout.
+            // Upsert -- duplicates are not an error, they replace the previous loadout.
             session.Loadouts[peerId] = loadout;
 
             result = TryClaimStart(session);
@@ -62,7 +62,7 @@ public sealed class GameSessionManager
     /// Drop a peer's previously-submitted loadout. Used by DifficultySelect "Unready" so
     /// the peer can resubmit with new selections. Returns false if the session is missing,
     /// the peer isn't connected, has no loadout stored, or the game has already started
-    /// (post-start retraction is not allowed — see comment on <see cref="TryStoreLoadout"/>).
+    /// (post-start retraction is not allowed -- see comment on <see cref="TryStoreLoadout"/>).
     /// </summary>
     public bool TryRemoveLoadout(string lobbyId, int peerId)
     {
@@ -109,7 +109,36 @@ public sealed class GameSessionManager
     }
 
     /// <summary>
-    /// Read the host-supplied song duration (in ms). Returns 0 if the host never sent metadata —
+    /// Snapshot the current loadout-ready tally so the caller can broadcast a
+    /// LoadoutReadyCount packet. Returns false if the session is missing or the
+    /// cue has already been broadcast (post-cue ready-count is meaningless -- the
+    /// game is already underway).
+    /// </summary>
+    public bool TryGetLoadoutReadyState(string lobbyId, out LoadoutReadyState state)
+    {
+        state = default;
+        if (!_sessions.TryGetValue(lobbyId, out var session))
+        {
+            return false;
+        }
+
+        lock (session.Gate)
+        {
+            if (session.CueBroadcast)
+            {
+                return false;
+            }
+
+            state = new LoadoutReadyState(
+                ReadyCount: session.Loadouts.Count,
+                TotalExpected: session.ExpectedMembers,
+                Peers: SnapshotPeers(session));
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Read the host-supplied song duration (in ms). Returns 0 if the host never sent metadata --
     /// callers should treat 0 as "unknown" and still surface a start-time so the lobby's runtime
     /// fields stay coherent.
     /// </summary>
@@ -165,7 +194,7 @@ public sealed class GameSessionManager
     /// <summary>
     /// Marks the peer as having reached end-of-chart. Returns whether all peers are now done
     /// (so the caller broadcasts GameEnd). A disconnected peer is implicitly out and doesn't
-    /// block end-of-game — the dropped peer's <see cref="RemovePeer"/> removes them from both
+    /// block end-of-game -- the dropped peer's <see cref="RemovePeer"/> removes them from both
     /// Peers and CompletedPeers, so the "all done" check sees the trimmed set.
     /// </summary>
     public bool TryMarkCompleted(int peerId, out CompletionResult result)
@@ -306,14 +335,23 @@ public sealed class GameSessionManager
             session.ReadyPeers.Remove(peerId);
             session.CompletedPeers.Remove(peerId);
 
+            // Pre-cue: shrink the quorum so the survivors can still start.
+            // Post-cue: leave it alone; gameplay treats absent peers as SittingOut.
+            if (!session.CueBroadcast && session.ExpectedMembers > session.Peers.Count)
+            {
+                session.ExpectedMembers = session.Peers.Count;
+            }
+
             if (session.Peers.Count == 0)
             {
                 _sessions.TryRemove(lobbyId, out _);
                 return new DisconnectResult(lobbyId, Array.Empty<NetPeer>(), false, false);
             }
 
-            // If the dropped peer was the last we were waiting on, surface the corresponding
-            // transition so the caller can broadcast cue/end without further input.
+            // Surface any transitions the disconnect just unblocked so the caller
+            // can fire start / cue / end without waiting for another packet.
+            var startResult = TryClaimStart(session);
+
             bool readyToCueNow = !session.CueBroadcast
                                  && session.Peers.Count >= session.ExpectedMembers
                                  && session.ReadyPeers.Count >= session.Peers.Count;
@@ -335,20 +373,24 @@ public sealed class GameSessionManager
                 lobbyId,
                 SnapshotPeers(session),
                 readyToCueNow,
-                readyToEndNow);
+                readyToEndNow,
+                startResult);
         }
     }
 
     private static TryStartResult TryClaimStart(GameSession session)
     {
+        // Loadouts.Count > 0 / Peers.Count > 0 guard against ExpectedMembers
+        // being decremented to zero by RemovePeer, which would otherwise let a
+        // new joiner trigger a GameStart with an empty Loadouts[].
         if (!session.Started
             && session.Peers.Count >= session.ExpectedMembers
-            && session.Loadouts.Count >= session.ExpectedMembers)
+            && session.Loadouts.Count >= session.ExpectedMembers
+            && session.Loadouts.Count > 0
+            && session.Peers.Count > 0)
         {
-            // Gate: every peer must have submitted the same chart hash, and
-            // it must not be all-zero ("not supplied"). Mismatch is fatal for
-            // the session — note-index events would refer to different notes
-            // on different clients, silently desyncing the prediction layer.
+            // Chart-hash mismatch is fatal: note-index events would point at
+            // different notes on different clients.
             byte[]? reference = null;
             foreach (var loadout in session.Loadouts.Values)
             {
@@ -429,7 +471,11 @@ public sealed class GameSessionManager
         }
 
         public string LobbyId { get; }
-        public int ExpectedMembers { get; }
+        // Quorum count for the start/cue gates. Initialized from the first peer's
+        // token claim and decremented when a peer disconnects before/during the
+        // pre-game phase, so the game isn't stuck waiting for a member who left
+        // the lobby and will never connect.
+        public int ExpectedMembers { get; set; }
         public Dictionary<int, NetPeer> Peers { get; } = new();
         public Dictionary<int, SetLoadoutPacket> Loadouts { get; } = new();
         public HashSet<int> ReadyPeers { get; } = new();
@@ -456,8 +502,14 @@ public readonly record struct CompletionResult(
     string LobbyId,
     IReadOnlyList<NetPeer> Peers);
 
+public readonly record struct LoadoutReadyState(
+    int ReadyCount,
+    int TotalExpected,
+    IReadOnlyList<NetPeer> Peers);
+
 public readonly record struct DisconnectResult(
     string? LobbyId,
     IReadOnlyList<NetPeer> RemainingPeers,
     bool ReadyToCueNow,
-    bool ReadyToEndNow);
+    bool ReadyToEndNow,
+    TryStartResult StartResult = default);

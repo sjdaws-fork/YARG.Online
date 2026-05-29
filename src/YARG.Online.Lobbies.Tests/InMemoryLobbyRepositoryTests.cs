@@ -25,6 +25,16 @@ internal static class LobbyRepositoryTestExtensions
         byte hostInstrument,
         CancellationToken ct) =>
         repo.CreateAsync(_ => lobby, hostLibrary, hostInstrument, ct);
+
+    // Pre-songSpeed signature. Defaults speed to 1.0 (100%) for tests that don't care.
+    public static Task<EnqueueResult> EnqueueSongAsync(
+        this ILobbyRepository repo,
+        string lobbyId,
+        string userId,
+        string songHash,
+        DateTimeOffset now,
+        CancellationToken ct) =>
+        repo.EnqueueSongAsync(lobbyId, userId, songHash, 1f, now, ct);
 }
 
 public class InMemoryLobbyRepositoryTests
