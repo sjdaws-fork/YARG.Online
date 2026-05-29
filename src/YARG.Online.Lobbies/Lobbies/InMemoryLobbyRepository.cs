@@ -205,7 +205,7 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
 
         if (!_entries.TryGetValue(lobbyId, out var entry))
         {
-            return Task.FromResult(new LeaveResult(LeaveOutcome.NotFound, null, null, null, null, null));
+            return Task.FromResult(new LeaveResult(LeaveOutcome.NotFound, null, null, null, null, null, null));
         }
 
         // We snapshot the decision under the entry lock, then evict from the outer dictionary only
@@ -214,13 +214,14 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
         Lobby? updated;
         SongLibraryDelta? delta;
         HostChange? hostChange;
+        GameAllocation? releasedAllocation = null;
         List<long>? removedQueueEntries = null;
         List<QueueAvailabilityDelta>? queueUpdates = null;
         lock (entry.Lock)
         {
             if (!entry.Members.Contains(userId))
             {
-                return Task.FromResult(new LeaveResult(LeaveOutcome.NotFound, null, null, null, null, null));
+                return Task.FromResult(new LeaveResult(LeaveOutcome.NotFound, null, null, null, null, null, null));
             }
 
             var wasHost = entry.Lobby.HostUserId == userId;
@@ -234,6 +235,13 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
                 removedQueueEntries = null;
                 queueUpdates = null;
                 hostChange = null;
+
+                // Lobby is being disposed mid-game — hand the allocation back to the
+                // caller so it can release the Agones slots. Clear it on the entry so
+                // there's no risk of a double-release if a racing call somehow sees
+                // this entry before TryRemove evicts it.
+                releasedAllocation = entry.CurrentAllocation;
+                entry.CurrentAllocation = null;
             }
             else
             {
@@ -260,10 +268,10 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
         if (close)
         {
             _entries.TryRemove(lobbyId, out _);
-            return Task.FromResult(new LeaveResult(LeaveOutcome.LobbyClosed, null, null, null, null, null));
+            return Task.FromResult(new LeaveResult(LeaveOutcome.LobbyClosed, null, null, null, null, null, releasedAllocation));
         }
 
-        return Task.FromResult(new LeaveResult(LeaveOutcome.Left, updated, delta, removedQueueEntries, queueUpdates, hostChange));
+        return Task.FromResult(new LeaveResult(LeaveOutcome.Left, updated, delta, removedQueueEntries, queueUpdates, hostChange, null));
     }
 
     public Task<bool> IsMemberAsync(string lobbyId, string userId, CancellationToken ct)
@@ -794,19 +802,19 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
 
         if (!_entries.TryGetValue(lobbyId, out var entry))
         {
-            return Task.FromResult(new LeaveResultsResultData(LeaveResultsOutcome.NotFound, null, null));
+            return Task.FromResult(new LeaveResultsResultData(LeaveResultsOutcome.NotFound, null, null, null));
         }
 
         lock (entry.Lock)
         {
             if (!entry.Members.Contains(userId))
             {
-                return Task.FromResult(new LeaveResultsResultData(LeaveResultsOutcome.NotMember, null, null));
+                return Task.FromResult(new LeaveResultsResultData(LeaveResultsOutcome.NotMember, null, null, null));
             }
 
             if (entry.IsBackInLobby.TryGetValue(userId, out var already) && already)
             {
-                return Task.FromResult(new LeaveResultsResultData(LeaveResultsOutcome.AlreadyBackInLobby, entry.Lobby, null));
+                return Task.FromResult(new LeaveResultsResultData(LeaveResultsOutcome.AlreadyBackInLobby, entry.Lobby, null, null));
             }
 
             entry.IsBackInLobby[userId] = true;
@@ -853,14 +861,21 @@ public sealed class InMemoryLobbyRepository : ILobbyRepository
                     };
                     SyncCurrentSong(entry);
 
+                    // Game is over — hand the allocation back so the caller can
+                    // release the Agones slots. Mirrors FinishGameAsync, which is
+                    // the other path that retires a live allocation.
+                    var releasedAllocation = entry.CurrentAllocation;
+                    entry.CurrentAllocation = null;
+
                     return Task.FromResult(new LeaveResultsResultData(
                         LeaveResultsOutcome.MarkedBackInLobbyAndGameEnded,
                         entry.Lobby,
-                        abandoned));
+                        abandoned,
+                        releasedAllocation));
                 }
             }
 
-            return Task.FromResult(new LeaveResultsResultData(LeaveResultsOutcome.MarkedBackInLobby, entry.Lobby, null));
+            return Task.FromResult(new LeaveResultsResultData(LeaveResultsOutcome.MarkedBackInLobby, entry.Lobby, null, null));
         }
     }
 

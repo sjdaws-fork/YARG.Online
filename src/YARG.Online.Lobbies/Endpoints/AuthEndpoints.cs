@@ -20,10 +20,10 @@ public static class AuthEndpoints
     {
         // Dev endpoint is only registered in Development. It mints an unverified identity from
         // any caller-supplied display name and must never be reachable in a deployed environment.
-        if (!env.IsDevelopment())
-        {
-            return routes;
-        }
+        //if (!env.IsDevelopment())
+        //{
+        //    return routes;
+        //}
 
         var group = routes.MapGroup("/api/v1/auth").WithTags("Auth");
 

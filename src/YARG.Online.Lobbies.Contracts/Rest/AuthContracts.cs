@@ -2,7 +2,9 @@ using System;
 
 namespace YARG.Online.Lobbies.Contracts.Rest;
 
+#nullable enable
 public sealed record DevAuthRequest(string Name, string? ClientVersion = null);
+#nullable disable
 
 public sealed record DevAuthResponse(
     string Token,

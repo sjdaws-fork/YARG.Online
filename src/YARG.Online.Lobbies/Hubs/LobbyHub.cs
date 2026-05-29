@@ -32,6 +32,7 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
     private readonly IGameJwtTokenService _gameJwt;
     private readonly IMapper _mapper;
     private readonly IGameAllocator _allocator;
+    private readonly IGameEndedHandler _gameEndedHandler;
     private readonly TimeProvider _clock;
     private readonly ILogger<LobbyHub> _logger;
 
@@ -48,6 +49,7 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
         IGameJwtTokenService gameJwt,
         IMapper mapper,
         IGameAllocator allocator,
+        IGameEndedHandler gameEndedHandler,
         TimeProvider clock,
         ILogger<LobbyHub> logger)
     {
@@ -63,6 +65,7 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
         _gameJwt = gameJwt;
         _mapper = mapper;
         _allocator = allocator;
+        _gameEndedHandler = gameEndedHandler;
         _clock = clock;
         _logger = logger;
     }
@@ -704,6 +707,10 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
             {
                 _buffer.Enqueue(new LobbyChange(lobbyId, LobbyChangeKind.Updated, _mapper.Map<LobbyDto>(updated)));
             }
+            if (result.ReleasedAllocation is { } allocation)
+            {
+                await ReleaseAllocationBestEffortAsync(lobbyId, allocation);
+            }
         }
         // Other outcomes are no-ops or harmless duplicates — no broadcast.
     }
@@ -809,7 +816,30 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
             case LeaveOutcome.LobbyClosed:
                 _logger.LogTrace("BroadcastLeaveAsync lobby closed: LobbyId={LobbyId}", lobbyId);
                 _buffer.Enqueue(new LobbyChange(lobbyId, LobbyChangeKind.Removed, null));
+                if (result.ReleasedAllocation is { } abandonedAllocation)
+                {
+                    await ReleaseAllocationBestEffortAsync(lobbyId, abandonedAllocation);
+                }
                 break;
+        }
+    }
+
+    private async Task ReleaseAllocationBestEffortAsync(string lobbyId, GameAllocation allocation)
+    {
+        // Cleanup path — use CancellationToken.None so the slot release runs to
+        // completion even when the triggering connection has already aborted.
+        // Mirrors the best-effort pattern in GameLifecycleEndpoints.FinishGame.
+        try
+        {
+            await _gameEndedHandler.OnGameEndedAsync(
+                new GameEndedContext(lobbyId, allocation.GameServerName, allocation.SlotCount),
+                CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "IGameEndedHandler failed for LobbyId={LobbyId} GameServer={GameServer}",
+                lobbyId, allocation.GameServerName);
         }
     }
 

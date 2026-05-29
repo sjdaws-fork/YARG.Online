@@ -44,7 +44,8 @@ public sealed record LeaveResult(
     SongLibraryDelta? Delta,
     IReadOnlyList<long>? RemovedQueueEntries,
     IReadOnlyList<QueueAvailabilityDelta>? QueueAvailabilityUpdates,
-    HostChange? HostChange);
+    HostChange? HostChange,
+    GameAllocation? ReleasedAllocation);
 
 public enum EnqueueOutcome
 {
@@ -175,7 +176,11 @@ public enum LeaveResultsOutcome
     NotMember,
 }
 
-public sealed record LeaveResultsResultData(LeaveResultsOutcome Outcome, Lobby? Lobby, QueuedSong? AbandonedSong);
+public sealed record LeaveResultsResultData(
+    LeaveResultsOutcome Outcome,
+    Lobby? Lobby,
+    QueuedSong? AbandonedSong,
+    GameAllocation? ReleasedAllocation);
 
 public enum UpdateLibraryOutcome
 {
