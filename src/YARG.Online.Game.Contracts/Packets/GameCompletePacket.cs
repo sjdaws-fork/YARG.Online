@@ -14,6 +14,8 @@ namespace YARG.Online.Game.Contracts.Packets;
 // empty and the score-screen verifier flags them as inconsistent.
 public struct GameCompletePacket : INetSerializable
 {
+    public GameCompletePacket() { }
+
     // Stamped by the server before fanout; 0 when client-originated.
     public int PeerId { get; set; }
 
