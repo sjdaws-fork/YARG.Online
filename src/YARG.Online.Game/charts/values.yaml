@@ -51,14 +51,15 @@ monitoring:
 # Internal-only Gateway for the lobbies game-server callbacks (ClusterIP Envoy,
 # restricted to game-server pods by NetworkPolicy). Port 80, not the pod's 5230.
 lobbies:
-  baseUrl: http://lobbies-internal-gateway.yarg-online-envoy-gateway-system.svc.cluster.local/
+  baseUrl: http://lobbies-internal-gateway.envoy-gateway-system.svc.cluster.local/
 
 # Retirement strategy: pods stay Allocated indefinitely after match end.
 # kubectl get gs will show drained Allocated pods accumulating until the next
 # image rollout drains them via rolling-update churn. This is intentional —
 # do not "fix" it by adding SDK.Shutdown() or a delete-on-empty path.
 
-# Populated by values.local.yaml (gitignored). Each key/value is rendered into
-# a Secret consumed by the game container via envFrom. The keys must match the
-# lobby's GameAuth__* values — JWT validation fails silently on mismatch.
+# Populated per-environment from values/<env>/game(.secrets).yaml. Each
+# key/value is rendered into a Secret consumed by the game container via
+# envFrom. The keys must match the lobby's GameAuth__* values — JWT
+# validation fails silently on mismatch.
 secrets: {}

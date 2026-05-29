@@ -1,0 +1,88 @@
+# OCI/OKE production sizing for kube-prometheus-stack. Control-plane workloads
+# pinned to the `workload=system` node pool; node-exporter is left unpinned
+# (DaemonSet, see values/common/monitoring.yaml). Merged on top of
+# values/common/monitoring.yaml.
+
+prometheus:
+  prometheusSpec:
+    resources:
+      requests:
+        cpu: 300m
+        memory: 1.5Gi
+      limits:
+        memory: 3Gi
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: oci-bv
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 30Gi
+    nodeSelector:
+      workload: system
+
+grafana:
+  # Grafana 13 startup peak (apiserver init, plugin loads, ngalert setup) —
+  # see local/monitoring.yaml for context. 256Mi requests / 512Mi limits.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+  persistence:
+    enabled: true
+    storageClassName: oci-bv
+    accessModes: [ReadWriteOnce]
+    size: 10Gi
+  nodeSelector:
+    workload: system
+
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 20m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: oci-bv
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 5Gi
+    nodeSelector:
+      workload: system
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+  nodeSelector:
+    workload: system
+
+prometheus-node-exporter:
+  # No nodeSelector — DaemonSet runs everywhere (see common values).
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+  nodeSelector:
+    workload: system

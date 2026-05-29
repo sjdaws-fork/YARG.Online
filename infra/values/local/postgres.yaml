@@ -1,0 +1,81 @@
+# Stack: local (k3s on workstation)
+#
+# Loaded by infra/Postgres.cs via the cnpg/cluster Helm chart. Small footprint
+# sized for a single-node k3s; storage uses the local-path provisioner.
+# No nodeSelector/tolerations — local k3s nodes carry no workload labels.
+
+cluster:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:18
+
+  storage:
+    size: 5Gi
+    storageClass: local-path
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 512Mi
+
+  monitoring:
+    enabled: true
+    podMonitor:
+      enabled: true
+    prometheusRule:
+      enabled: true
+
+  postgresql:
+    shared_preload_libraries:
+      - pg_stat_statements
+    # CNPG's Cluster CR validates parameters as map[string]string. Quote every
+    # value — including memory-unit values like "128MB" — so go-yaml never
+    # resolves them as anything other than a string.
+    parameters:
+      # Memory — ~25% of RAM to shared_buffers, hint ~75% as effective cache.
+      shared_buffers: "128MB"
+      effective_cache_size: "384MB"
+      work_mem: "4MB"
+      maintenance_work_mem: "64MB"
+      # PgBouncer fans incoming connections into a small real pool.
+      max_connections: "50"
+      # SSD-aware planner hints (local-path on NVMe).
+      random_page_cost: "1.1"
+      effective_io_concurrency: "200"
+      # Parallel query — modest on a workstation.
+      max_worker_processes: "2"
+      max_parallel_workers: "2"
+      max_parallel_workers_per_gather: "1"
+
+  initdb:
+    database: yarg
+    owner: yarg
+    # Run against the `yarg` app database as its owner (not against `postgres`)
+    # so the pg_stat_statements views are visible from the app's connection.
+    postInitApplicationSQL:
+      - CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+
+  primaryUpdateStrategy: unsupervised
+  primaryUpdateMethod: restart
+
+poolers:
+  - name: rw
+    type: rw
+    instances: 1
+    poolMode: transaction
+    parameters:
+      max_client_conn: "200"
+      default_pool_size: "10"
+      reserve_pool_size: "5"
+      reserve_pool_timeout: "3"
+      server_login_retry: "5"
+      query_wait_timeout: "30"
+      max_db_connections: "25"
+    monitoring:
+      enabled: true
+      podMonitor:
+        enabled: true
+
+backups:
+  enabled: false

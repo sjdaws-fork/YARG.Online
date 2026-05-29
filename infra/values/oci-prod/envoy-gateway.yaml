@@ -1,0 +1,12 @@
+# Pin both the controller Deployment and the certgen pre-install Job to the
+# `system` node pool. certgen is a Helm pre-install Job that creates the
+# controller's TLS bootstrap Secret — pinning it avoids transient capacity
+# consumption on workload node pools during install.
+deployment:
+  pod:
+    nodeSelector:
+      workload: system
+certgen:
+  job:
+    nodeSelector:
+      workload: system

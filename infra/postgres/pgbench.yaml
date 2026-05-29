@@ -1,0 +1,129 @@
+# Ad-hoc pgbench harness for the `local` Postgres cluster.
+#
+# Two Jobs:
+#   1. pgbench-init    — populates a benchmark dataset (one-shot, ~30-60s).
+#   2. pgbench-run     — runs the read-only + mixed benchmarks through the
+#                        PgBouncer pooler (60s each).
+#
+# Both connect through the pooler (postgres-cluster-pooler-rw) using the
+# `yarg` app user. Adjust the scale factor (-s) in pgbench-init to test
+# different cache/disk regimes:
+#   -s 5   ≈ 75 MB   — fits entirely in shared_buffers (128MB on local)
+#   -s 10  ≈ 150 MB  — exceeds shared_buffers, tests cache pressure
+#   -s 25  ≈ 375 MB  — tests disk path on local-path PVC
+#
+# Re-apply by deleting jobs first (Jobs are immutable once created):
+#   kubectl delete -f infra/postgres/pgbench.yaml --ignore-not-found
+#   kubectl apply  -f infra/postgres/pgbench.yaml
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pgbench-init
+  namespace: database
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: pgbench
+          image: ghcr.io/cloudnative-pg/postgresql:18
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              echo "=== Initializing pgbench dataset (scale=10) ==="
+              PGPASSWORD="$POSTGRES_PASSWORD" pgbench \
+                -h postgres-cluster-pooler-rw \
+                -p 5432 \
+                -U yarg \
+                -d yarg \
+                -i \
+                -s 10 \
+                --no-vacuum
+              echo "=== Vacuuming directly against the primary ==="
+              PGPASSWORD="$POSTGRES_PASSWORD" psql \
+                -h postgres-cluster-rw \
+                -p 5432 \
+                -U yarg \
+                -d yarg \
+                -c "VACUUM ANALYZE;"
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-cluster-app
+                  key: password
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pgbench-run
+  namespace: database
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: pgbench
+          image: ghcr.io/cloudnative-pg/postgresql:18
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              # Both jobs are created at the same time by `kubectl apply`, so
+              # this Job may race pgbench-init. Poll until the bench schema is
+              # in place before starting the workload.
+              echo "Waiting for pgbench schema to exist..."
+              until PGPASSWORD="$POSTGRES_PASSWORD" psql \
+                  -h postgres-cluster-pooler-rw -p 5432 -U yarg -d yarg \
+                  -tAc "SELECT 1 FROM pg_class WHERE relname='pgbench_accounts'" \
+                  | grep -q 1; do
+                echo "  schema not ready yet, retrying in 2s..."
+                sleep 2
+              done
+              echo "Schema ready, starting benchmark."
+
+              echo ""
+              echo "===================================================="
+              echo "  Read-only benchmark (matches app hot path)"
+              echo "  -c 20 clients, -j 4 threads, 60s, via pooler"
+              echo "===================================================="
+              PGPASSWORD="$POSTGRES_PASSWORD" pgbench \
+                -h postgres-cluster-pooler-rw \
+                -p 5432 \
+                -U yarg \
+                -d yarg \
+                --select-only \
+                -c 20 \
+                -j 4 \
+                -T 60 \
+                -P 5 \
+                --no-vacuum
+
+              echo ""
+              echo "===================================================="
+              echo "  Mixed workload (~80% read, default tpcb-like)"
+              echo "  Writes will be bottlenecked by WAL fsync on a"
+              echo "  single instance; expect lower TPS than read-only."
+              echo "===================================================="
+              PGPASSWORD="$POSTGRES_PASSWORD" pgbench \
+                -h postgres-cluster-pooler-rw \
+                -p 5432 \
+                -U yarg \
+                -d yarg \
+                -c 20 \
+                -j 4 \
+                -T 60 \
+                -P 5 \
+                --no-vacuum
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-cluster-app
+                  key: password

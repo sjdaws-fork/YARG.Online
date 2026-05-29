@@ -1,0 +1,2 @@
+# Local k3s overrides for Agones. Single-node cluster, no nodeSelector — see
+# infra/values/local/monitoring.yaml for the same reasoning.

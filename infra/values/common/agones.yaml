@@ -1,0 +1,23 @@
+# Shared Agones chart values. Loaded before the per-stack file, so anything
+# here is overridden by values/{stack}/agones.yaml on conflict.
+
+agones:
+  # Single-replica controller/allocator keeps the footprint small. Bump in
+  # the per-stack file when HA matters.
+  controller:
+    replicas: 1
+  allocator:
+    replicas: 1
+    # Lobby calls Agones in-cluster via the K8s API, so the allocator stays
+    # internal — no LB.
+    service:
+      serviceType: ClusterIP
+  # Clients don't query Agones directly in our architecture.
+  ping:
+    install: false
+  # The Agones chart ships its own ServiceMonitor (controller, allocator,
+  # extensions). kube-prometheus-stack picks it up automatically.
+  metrics:
+    serviceMonitor:
+      enabled: true
+      interval: 30s

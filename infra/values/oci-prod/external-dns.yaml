@@ -1,0 +1,46 @@
+# external-dns on Cloudflare. Watches Gateway API HTTPRoutes and syncs DNS
+# records for hostnames matching the domain filter to the Gateway's address
+# (the OCI NLB's reserved IP). Token comes from the external-dns-cloudflare
+# Secret created by ExternalDns.Deploy.
+
+provider:
+  name: cloudflare
+
+# Gateway API source — external-dns reads HTTPRoute hostnames directly, so
+# hostnames live only in the app charts (lobbies, game, registry).
+sources:
+  - gateway-httproute
+
+domainFilters:
+  - yarg.online
+
+# `sync` = create + update + delete records (default `upsert-only` leaves
+# stale records when an HTTPRoute is removed).
+policy: sync
+
+# TXT registry owner — namespaces this controller's records so a different
+# controller running against the same zone won't fight over them.
+txtOwnerId: yarg-online-oci
+
+# Sets the orange-cloud proxy flag on every record this controller creates.
+extraArgs:
+  - --cloudflare-proxied
+
+env:
+  - name: CF_API_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: external-dns-cloudflare
+        key: cloudflare_api_token
+
+# Tight caps — controller watches a handful of routes and reconciles on an
+# interval; it barely registers.
+resources:
+  requests:
+    cpu: 10m
+    memory: 64Mi
+  limits:
+    memory: 128Mi
+
+nodeSelector:
+  workload: system

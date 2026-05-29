@@ -1,0 +1,13 @@
+# OCI/OKE production overrides. Pin Agones control-plane components to the
+# `workload=system` node pool — same pattern as monitoring.
+
+agones:
+  controller:
+    nodeSelector:
+      workload: system
+  allocator:
+    nodeSelector:
+      workload: system
+  extensions:
+    nodeSelector:
+      workload: system

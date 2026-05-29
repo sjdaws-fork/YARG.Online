@@ -1,0 +1,4 @@
+# Shared Envoy Gateway controller chart values. Loaded before the per-stack
+# file, so anything here is overridden by values/{stack}/envoy-gateway.yaml on
+# conflict. Empty today — no settings are shared across stacks. The file must
+# still exist because EnvoyGateway.Deploy throws if it's missing.

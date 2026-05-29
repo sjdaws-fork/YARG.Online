@@ -1,0 +1,46 @@
+# Shared kube-prometheus-stack values. Loaded before the per-stack file, so
+# anything here is overridden by values/{stack}/monitoring.yaml on conflict.
+
+prometheus:
+  prometheusSpec:
+    retention: 7d
+    # Discover ServiceMonitors / PodMonitors / PrometheusRules across all
+    # namespaces — the lobbies and game charts ship their own SM/PM in their
+    # own namespaces.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+
+grafana:
+  # Anonymous Admin, no login form. Cloudflare Access (oci-prod) or LAN trust
+  # (local) is the real authentication boundary.
+  grafana.ini:
+    auth.anonymous:
+      enabled: true
+      org_role: Admin
+    auth:
+      disable_login_form: true
+      disable_signout_menu: true
+    users:
+      allow_sign_up: false
+    security:
+      allow_embedding: true
+  # Auto-import dashboards from any ConfigMap labeled grafana_dashboard=1 —
+  # the Monitoring.InstallDashboards helper creates one per JSON.
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+
+# Bundled alert rules off — Alertmanager is installed for later use, but we
+# don't ship a default ruleset.
+defaultRules:
+  create: false
+
+prometheus-node-exporter:
+  # DaemonSet — tolerate every taint so it runs on the gameserver node pool
+  # too. Don't add a nodeSelector in stack overrides for this component.
+  tolerations:
+    - operator: Exists

@@ -1,0 +1,119 @@
+# Stack: oci-prod (OKE on Oracle Cloud)
+#
+# Loaded by infra/Postgres.cs via the cnpg/cluster Helm chart. Sizing and
+# read-tuned parameters follow the upstream CNPG guide for a 1 OCPU / 4 GiB
+# instance on Oracle block volumes.
+#
+# WARNING: This stack is currently gated by a NotImplementedException in
+# Postgres.cs — oci-prod node provisioning for Postgres is not yet decided.
+# The nodeSelector/tolerations below target a `workload=database` pool that
+# does not exist yet; remove the guard once the pool is provisioned in
+# infra/Oracle.cs.
+
+cluster:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:18
+
+  storage:
+    size: 20Gi
+    storageClass: oci-bv
+
+  resources:
+    requests:
+      cpu: "1"
+      memory: 4Gi
+    limits:
+      cpu: "1"
+      memory: 4Gi
+
+  # Pin to the dedicated DB pool. See the warning at the top of this file.
+  affinity:
+    nodeSelector:
+      workload: database
+    tolerations:
+      - key: workload
+        operator: Equal
+        value: database
+        effect: NoSchedule
+
+  monitoring:
+    enabled: true
+    podMonitor:
+      enabled: true
+    prometheusRule:
+      enabled: true
+
+  postgresql:
+    shared_preload_libraries:
+      - pg_stat_statements
+    # CNPG's Cluster CR validates parameters as map[string]string. Quote every
+    # value — including memory-unit values like "1GB" — so go-yaml never
+    # resolves them as anything other than a string.
+    parameters:
+      # Memory — 25% to shared_buffers, hint 75% total for cache.
+      shared_buffers: "1GB"
+      effective_cache_size: "3GB"
+      work_mem: "16MB"
+      maintenance_work_mem: "256MB"
+
+      # PgBouncer fans incoming connections into a small real pool.
+      max_connections: "100"
+
+      # WAL / checkpoint.
+      wal_buffers: "16MB"
+      min_wal_size: "1GB"
+      max_wal_size: "4GB"
+      checkpoint_completion_target: "0.9"
+
+      # SSD-aware planner hints (oci-bv is SSD-backed).
+      random_page_cost: "1.1"
+      effective_io_concurrency: "200"
+
+      # Parallel query — modest, only 1 OCPU.
+      max_worker_processes: "2"
+      max_parallel_workers: "2"
+      max_parallel_workers_per_gather: "1"
+
+      # Statistics & monitoring.
+      default_statistics_target: "100"
+
+      # Read-heavy bgwriter tuning — flush dirty pages less aggressively so
+      # hot pages stay in cache longer.
+      bgwriter_lru_maxpages: "200"
+      bgwriter_delay: "100ms"
+
+  initdb:
+    database: yarg
+    owner: yarg
+    # Run against the `yarg` app database as its owner (not against `postgres`)
+    # so the pg_stat_statements views are visible from the app's connection.
+    postInitApplicationSQL:
+      - CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+
+  # Single instance — restart-in-place is the only sane upgrade path until a
+  # replica is added (see CNPG guide section 12).
+  primaryUpdateStrategy: unsupervised
+  primaryUpdateMethod: restart
+
+poolers:
+  - name: rw
+    type: rw
+    instances: 1
+    poolMode: transaction
+    parameters:
+      max_client_conn: "500"
+      default_pool_size: "20"
+      reserve_pool_size: "5"
+      reserve_pool_timeout: "3"
+      server_login_retry: "5"
+      query_wait_timeout: "30"
+      max_db_connections: "50"
+    monitoring:
+      enabled: true
+      podMonitor:
+        enabled: true
+
+# Backups deferred. Wire up later by setting backups.enabled and supplying R2
+# credentials via a Pulumi secret + k8s Secret in the database namespace.
+backups:
+  enabled: false

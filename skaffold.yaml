@@ -25,24 +25,26 @@ build:
 manifests:
   helm:
     releases:
-      - name: lobbies
-        chartPath: src/YARG.Online.Lobbies/charts
-        namespace: yarg-online-local-lobbies
-        createNamespace: true
-        valuesFiles:
-          - src/YARG.Online.Lobbies/charts/values.local.yaml
-        setValueTemplates:
-          image.repository: '{{.IMAGE_REPO_lobbies}}'
-          image.tag: '{{.IMAGE_TAG_lobbies}}@{{.IMAGE_DIGEST_lobbies}}'
+      # game is deployed first: it creates the `game` namespace, which the
+      # lobbies release needs for its cross-namespace Agones Role/RoleBinding.
       - name: game
         chartPath: src/YARG.Online.Game/charts
-        namespace: yarg-online-local-game
+        namespace: game
         createNamespace: true
         valuesFiles:
-          - src/YARG.Online.Game/charts/values.local.yaml
+          - values/local/game.yaml
         setValueTemplates:
           image.repository: '{{.IMAGE_REPO_game}}'
           image.tag: '{{.IMAGE_TAG_game}}@{{.IMAGE_DIGEST_game}}'
+      - name: lobbies
+        chartPath: src/YARG.Online.Lobbies/charts
+        namespace: lobbies
+        createNamespace: true
+        valuesFiles:
+          - values/local/lobbies.yaml
+        setValueTemplates:
+          image.repository: '{{.IMAGE_REPO_lobbies}}'
+          image.tag: '{{.IMAGE_TAG_lobbies}}@{{.IMAGE_DIGEST_lobbies}}'
 deploy:
   helm: {}
 
@@ -58,30 +60,38 @@ profiles:
         path: /build/artifacts/0/platforms
         value: [linux/arm64]
       - op: add
+        path: /build/artifacts/0/docker/buildArgs
+        value:
+          BUILD_CONFIGURATION: Release
+      - op: add
         path: /build/artifacts/1/platforms
         value: [linux/arm64]
+      - op: add
+        path: /build/artifacts/1/docker/buildArgs
+        value:
+          BUILD_CONFIGURATION: Release
     manifests:
       helm:
         releases:
-          # game is deployed first: it creates the yarg-online-game namespace, which
-          # the lobbies release needs for its cross-namespace Agones Role/RoleBinding.
+          # game is deployed first: it creates the `game` namespace, which the
+          # lobbies release needs for its cross-namespace Agones Role/RoleBinding.
           - name: game
             chartPath: src/YARG.Online.Game/charts
-            namespace: yarg-online-game
+            namespace: game
             createNamespace: true
             valuesFiles:
-              - src/YARG.Online.Game/charts/values.oci-prod.yaml
-              - src/YARG.Online.Game/charts/values.oci-prod.secrets.yaml
+              - values/oci-prod/game.yaml
+              - values/oci-prod/game.secrets.yaml
             setValueTemplates:
               image.repository: '{{.IMAGE_REPO_game}}'
               image.tag: '{{.IMAGE_TAG_game}}@{{.IMAGE_DIGEST_game}}'
           - name: lobbies
             chartPath: src/YARG.Online.Lobbies/charts
-            namespace: yarg-online-lobbies
+            namespace: lobbies
             createNamespace: true
             valuesFiles:
-              - src/YARG.Online.Lobbies/charts/values.oci-prod.yaml
-              - src/YARG.Online.Lobbies/charts/values.oci-prod.secrets.yaml
+              - values/oci-prod/lobbies.yaml
+              - values/oci-prod/lobbies.secrets.yaml
             setValueTemplates:
               image.repository: '{{.IMAGE_REPO_lobbies}}'
               image.tag: '{{.IMAGE_TAG_lobbies}}@{{.IMAGE_DIGEST_lobbies}}'

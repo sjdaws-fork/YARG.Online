@@ -12,7 +12,10 @@ public sealed record OracleResources(
     Output<string> NlbReservedIp,
     Output<string> ClusterId,
     Output<string> LobbiesRepositoryId,
-    Output<string> GameRepositoryId);
+    Output<string> GameRepositoryId,
+    Output<string> BastionSessionId,
+    Output<string> BastionHost,
+    Output<string> ApiEndpointIp);
 
 /// <summary>
 /// Provisions the OCI side of the deployment: VCN + networking, an OKE cluster, three
@@ -28,11 +31,22 @@ public static class Oracle
         // policy compartment and the availability-domain lookup, rather than duplicating
         // it under a bespoke key. There is no provider-level compartment, so
         // `compartmentId` is necessarily an application config value.
-        var tenancyId = new Pulumi.Config("oci").Require("tenancyOcid");
+        var ociConfig = new Pulumi.Config("oci");
+        var tenancyId = ociConfig.Require("tenancyOcid");
+        var ociRegion = ociConfig.Require("region");
         var compartmentId = config.Require("compartmentId");
         var vcnCidr = config.Get("vcnCidr") ?? "10.0.0.0/16";
         var kubernetesVersion = config.Get("kubernetesVersion") ?? "v1.35.2";
-        var sshPublicKey = config.Get("sshPublicKey");
+        // The bastion session requires an SSH key pair: required when OKE is provisioned,
+        // and the matching private key is consumed locally by Program.cs to open the
+        // SOCKS5 tunnel through the bastion.
+        var sshPublicKey = config.Get("sshPublicKey")
+            ?? throw new System.InvalidOperationException(
+                "yarg-online:sshPublicKey is required when provisionOkeCluster=true — " +
+                "the OCI Bastion session resource needs it.");
+        // First-time bring-up: default to 0.0.0.0/0 so the operator isn't locked out before
+        // the bastion exists. Tighten to <your-ip>/32 after the first `pulumi up`.
+        var operatorCidr = config.Get("operatorCidr") ?? "0.0.0.0/0";
         var imageIdOverride = config.Get("nodeImageId");
 
         // Always Free is single-AD — just take the first one.
@@ -179,13 +193,22 @@ public static class Oracle
         Rule("gs-in-udp", gameserverNsg.Id, "INGRESS", "17", "0.0.0.0/0", 7000, 8000);
         Rule("gs-eg-all", gameserverNsg.Id, "EGRESS", "all", "0.0.0.0/0");
 
+        // H-4: API server is private (IsPublicIpEnabled=false below). Only VCN-internal
+        // traffic reaches it — the bastion + SOCKS5 tunnel is the operator's path in.
         Rule("api-in-vcn", apiNsg.Id, "INGRESS", "all", vcnCidr);
-        Rule("api-in-6443", apiNsg.Id, "INGRESS", "6", "0.0.0.0/0", 6443);
         Rule("api-eg-all", apiNsg.Id, "EGRESS", "all", "0.0.0.0/0");
 
-        // Cloudflare-IP allowlist is a follow-up; for now 80/443 are open to the world.
-        Rule("nlb-in-80", nlbNsg.Id, "INGRESS", "6", "0.0.0.0/0", 80);
-        Rule("nlb-in-443", nlbNsg.Id, "INGRESS", "6", "0.0.0.0/0", 443);
+        // NLB is reachable only from Cloudflare's published proxy IPs. Fetched at
+        // `pulumi up` time from https://api.cloudflare.com/client/v4/ips — the list
+        // changes ~yearly, periodic redeploys refresh it. TLS terminates at Envoy
+        // (Cloudflare Origin Certificate), so only :443 is exposed; :80 is gone.
+        //
+        // IPv4 only: the VCN isn't IPv6-enabled and the NLB's reserved public IP is
+        // v4, so Cloudflare's edge can only ever reach the origin over v4. Emitting
+        // IPv6 CIDRs here would be rejected by OCI ("VCN not applicable for IPv6").
+        var cfIps = CloudflareIps.Fetch();
+        for (var i = 0; i < cfIps.V4.Count; i++)
+            Rule($"nlb-in-443-cf-v4-{i}", nlbNsg.Id, "INGRESS", "6", cfIps.V4[i], 443);
         Rule("nlb-eg-all", nlbNsg.Id, "EGRESS", "all", "0.0.0.0/0");
 
         // --- Subnets (regional) ---
@@ -217,6 +240,35 @@ public static class Oracle
             DisplayName = "yarg-online-nlb",
         });
 
+        // --- OCI Bastion (H-4 remediation) ---
+        //
+        // Lives in the worker-private subnet (fully private — prohibitPublicIp=true,
+        // NAT/service-gateway routes only). A PORT_FORWARDING session below forwards
+        // traffic to the OKE API endpoint at port 6443.
+        //
+        // Note: DYNAMIC_PORT_FORWARDING (SOCKS5) would be nicer (multi-target, no
+        // hostname rewriting) but OCI restricts SOCKS5 to resources within the
+        // bastion's target subnet. The API endpoint sits in `yarg-subnet-api`,
+        // which was originally provisioned with prohibitPublicIp=false — and OCI's
+        // API rejects in-place mutation of that attribute. Bastion subnets must
+        // have prohibitPublicIp=true, so we can't co-locate the bastion with the
+        // API endpoint without recreating the cluster. PORT_FORWARDING has no
+        // target-subnet restriction.
+        //
+        // Session cap is 3h (OCI service limit); every `pulumi up` past expiry
+        // rotates it transparently.
+        var bastion = new Oci.Bastion.Bastion("yarg-bastion", new()
+        {
+            CompartmentId = compartmentId,
+            Name = "yarg-bastion",
+            BastionType = "STANDARD",
+            TargetSubnetId = workerPrivateSubnet.Id,
+            ClientCidrBlockAllowLists = { operatorCidr },
+            MaxSessionTtlInSeconds = 10800,
+        });
+
+        var bastionHost = Output.Create($"host.bastion.{ociRegion}.oci.oraclecloud.com");
+
         // --- OKE cluster ---
         var cluster = new Oci.ContainerEngine.Cluster("yarg-oke", new()
         {
@@ -228,7 +280,10 @@ public static class Oracle
             EndpointConfig = new Oci.ContainerEngine.Inputs.ClusterEndpointConfigArgs
             {
                 SubnetId = apiSubnet.Id,
-                IsPublicIpEnabled = true,
+                // H-4: private API endpoint. Reached via the OCI Bastion
+                // PORT_FORWARDING session declared below and the tunnel Command
+                // in Program.cs.
+                IsPublicIpEnabled = false,
                 NsgIds = { apiNsg.Id },
             },
             Options = new Oci.ContainerEngine.Inputs.ClusterOptionsArgs
@@ -240,6 +295,34 @@ public static class Oracle
                     ServicesCidr = "10.96.0.0/16",
                 },
             },
+        });
+
+        // OKE's private endpoint output is "<ip>:6443". Split off the IP for the
+        // bastion target and the local ssh -L command.
+        var apiEndpointIp = cluster.Endpoints.Apply(eps =>
+        {
+            var pe = eps[0].PrivateEndpoint
+                ?? throw new InvalidOperationException(
+                    "Cluster has no private endpoint — IsPublicIpEnabled must be false and the " +
+                    "cluster must be fully provisioned before the bastion session can target it.");
+            return pe.Split(':')[0];
+        });
+
+        var bastionSession = new Oci.Bastion.Session("oke-api-port", new()
+        {
+            BastionId = bastion.Id,
+            DisplayName = "oke-api-port",
+            KeyDetails = new Oci.Bastion.Inputs.SessionKeyDetailsArgs
+            {
+                PublicKeyContent = sshPublicKey,
+            },
+            TargetResourceDetails = new Oci.Bastion.Inputs.SessionTargetResourceDetailsArgs
+            {
+                SessionType = "PORT_FORWARDING",
+                TargetResourcePrivateIpAddress = apiEndpointIp,
+                TargetResourcePort = 6443,
+            },
+            SessionTtlInSeconds = 10800,
         });
 
         // --- Worker node image: OKE OL8 aarch64 for K8s 1.35 (OL7 is unsupported) ---
@@ -330,8 +413,7 @@ public static class Oracle
                     { "user_data", nodeUserData },
                 },
             };
-            if (sshPublicKey is not null)
-                args.SshPublicKey = sshPublicKey;
+            args.SshPublicKey = sshPublicKey;
             return new Oci.ContainerEngine.NodePool(name, args);
         }
 
@@ -386,6 +468,9 @@ public static class Oracle
             nlbReservedIp.IpAddress,
             cluster.Id,
             lobbiesRepo.Id,
-            gameRepo.Id);
+            gameRepo.Id,
+            bastionSession.Id,
+            bastionHost,
+            apiEndpointIp);
     }
 }

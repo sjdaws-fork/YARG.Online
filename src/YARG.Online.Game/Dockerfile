@@ -10,9 +10,10 @@ COPY src/YARG.Online.Game.Contracts/YARG.Online.Game.Contracts.csproj      src/Y
 RUN dotnet restore src/YARG.Online.Game/YARG.Online.Game.csproj
 
 FROM restore AS build
+ARG BUILD_CONFIGURATION=Debug
 COPY . .
 RUN dotnet publish src/YARG.Online.Game/YARG.Online.Game.csproj \
-    -c Debug -o /app/publish --no-restore
+    -c $BUILD_CONFIGURATION -o /app/publish --no-restore
 
 # aspnet (not runtime) image — the game host runs Kestrel for the /metrics + /healthz
 # endpoints alongside the UDP listener.

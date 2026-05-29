@@ -1,0 +1,3 @@
+# Local Envoy Gateway controller chart values. Empty — k3s has no node labels
+# to select on. The file must still exist because EnvoyGateway.Deploy throws
+# if the stack-specific values file is missing.

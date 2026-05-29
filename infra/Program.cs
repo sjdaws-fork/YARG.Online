@@ -1,10 +1,8 @@
 using Pulumi;
 using Pulumi.Kubernetes;
 using Pulumi.Kubernetes.Core.V1;
-using Pulumi.Kubernetes.Helm.V4;
 using Pulumi.Kubernetes.Types.Inputs.Apps.V1;
 using Pulumi.Kubernetes.Types.Inputs.Core.V1;
-using Pulumi.Kubernetes.Types.Inputs.Helm.V4;
 using Pulumi.Kubernetes.Types.Inputs.Meta.V1;
 using Pulumi.Kubernetes.Yaml;
 using YARG.Online.Infrastructure;
@@ -19,13 +17,6 @@ return await Deployment.RunAsync(() =>
 {
     var config = new Pulumi.Config();
     var provisionOke = config.GetBoolean("provisionOkeCluster") ?? false;
-    var envoyGatewayVersion = config.Require("envoyGatewayVersion");
-    var gatewayApiChannel = config.Require("gatewayApiChannel");
-    var agonesVersion = config.Get("agonesVersion") ?? "1.57.0";
-    var namespacePrefix = config.Get("namespacePrefix") ?? "";
-
-    string PrefixedNs(string name) =>
-        string.IsNullOrEmpty(namespacePrefix) ? name : $"{namespacePrefix}-{name}";
 
     // The `local` stack attaches to an existing kube context; OCI stacks provision an
     // OKE cluster first and drive the Kubernetes provider from its generated kubeconfig.
@@ -34,7 +25,44 @@ return await Deployment.RunAsync(() =>
     if (provisionOke)
     {
         oci = Oracle.Provision(config);
-        k8s = new Provider("oci", new ProviderArgs { KubeConfig = oci.KubeConfig });
+
+        // H-4: the OKE API server is private. Open an ssh local-port-forward
+        // (`-L 6443:<api-ip>:6443`) through the OCI Bastion's PORT_FORWARDING
+        // session as part of the dependency graph, then patch the generated
+        // kubeconfig so it talks to 127.0.0.1:6443. The private key path is
+        // consumed locally by ssh.exe — only the matching pubkey enters Pulumi
+        // state (via the bastion session resource).
+        var sshPrivateKeyPath = config.Require("sshPrivateKeyPath");
+
+        var tunnelCreate = Output.Tuple(oci.BastionSessionId, oci.BastionHost, oci.ApiEndpointIp)
+            .Apply(t =>
+            {
+                var (sessionId, bastionHost, apiIp) = t;
+                return BuildTunnelCreateScript(sshPrivateKeyPath, sessionId, bastionHost, apiIp);
+            });
+
+        var tunnel = new Pulumi.Command.Local.Command("oke-api-tunnel",
+            new Pulumi.Command.Local.CommandArgs
+            {
+                Create = tunnelCreate,
+                Delete = BuildTunnelDeleteScript(),
+                // Windows-only — matches the operator's environment. If this ever
+                // moves to CI/Linux, swap Start-Process/Stop-Process for `ssh -fN`
+                // + `pkill -F .tunnel.pid`. Mechanically identical.
+                Interpreter = { "powershell.exe", "-NoProfile", "-Command" },
+                // Re-run Create only when the session is replaced (every 3h on TTL
+                // expiry, or on config change). Between rotations the detached ssh
+                // process persists across `pulumi up` invocations.
+                Triggers = { (Input<object>)oci.BastionSessionId.Apply(s => (object)s) },
+            });
+
+        // Rewrite the kubeconfig's `server:` URL to point at the local forward
+        // (127.0.0.1:6443) and pin `tls-server-name:` to the original API host so
+        // client-go's TLS verification still matches OKE's certificate SANs.
+        var patchedKubeconfig = oci.KubeConfig.Apply(PatchKubeconfigForPortForward);
+
+        k8s = new Provider("oci", new ProviderArgs { KubeConfig = patchedKubeconfig },
+            new CustomResourceOptions { DependsOn = { tunnel } });
     }
     else
     {
@@ -43,12 +71,22 @@ return await Deployment.RunAsync(() =>
 
     var providerOpts = new CustomResourceOptions { Provider = k8s };
 
-    // Pin control-plane workloads to the `system` node pool on OCI. Local k3s has no
-    // such label, so leave the selector null there — matches MonitoringProfile.Light,
-    // which skips its nodeSelector to avoid Pending pods on a single-node cluster.
-    var systemNodeSelector = provisionOke
-        ? new Dictionary<string, object> { ["workload"] = "system" }
-        : null;
+    // --- Cloudflare provider (oci-prod only) ---
+    //
+    // Hoisted ahead of EnvoyGateway.Deploy so the Gateway module can issue an
+    // Origin CA certificate against the same provider. The provider's API
+    // token must carry, at minimum: Zone.DNS:Edit, Zone.SSL and Certificates:Edit,
+    // Account.Cloudflare Tunnel:Edit, Account Settings:Read.
+    Cloudflare.Provider? cfProvider = null;
+    var cfToken = config.GetSecret("cloudflareApiToken");
+    var cfApexDomain = config.Get("cloudflareApexDomain");
+    if (provisionOke && cfToken is not null)
+    {
+        cfProvider = new Cloudflare.Provider("cloudflare", new Cloudflare.ProviderArgs
+        {
+            ApiToken = cfToken,
+        });
+    }
 
     // --- kube-prometheus-stack ---
     //
@@ -58,321 +96,58 @@ return await Deployment.RunAsync(() =>
     // is true and would fail with "resource mapping not found" on a fresh cluster
     // if it raced the monitoring install.
     //
-    // Local k3s uses the `local-path` StorageClass and the small Light profile;
-    // oci-prod uses `oci-bv` and the Full profile pinned to the workload=system
-    // node pool. Resource shapes and PVC sizes live in MonitoringProfile
-    // (Monitoring.cs), not Pulumi config.
-    var monitoringNamespaceName = PrefixedNs("monitoring");
-    var monitoringNs = new Namespace("monitoring", new NamespaceArgs
-    {
-        Metadata = new ObjectMetaArgs { Name = monitoringNamespaceName },
-    }, providerOpts);
+    // Sizing, storage class, and node selectors live in
+    // infra/values/{common,local,oci-prod}/monitoring.yaml. The release name
+    // "monitoring" is a code-level const in Monitoring.cs because it's referenced
+    // by the lobbies/game ServiceMonitor/PodMonitor selectors (release=monitoring)
+    // and by in-cluster Service DNS (monitoring-grafana, …).
+    var monitoringNamespaceName = "monitoring";
+    var monitoring = Monitoring.Deploy(config, k8s, monitoringNamespaceName, providerOpts);
 
-    var monitoringProfile = provisionOke ? MonitoringProfile.Full : MonitoringProfile.Light;
-    var monitoringStorageClass = config.Get("monitoringStorageClass")
-        ?? (provisionOke ? "oci-bv" : "local-path");
-    var kubePrometheusStackVersion = config.Get("kubePrometheusStackVersion") ?? "85.2.2";
+    // --- CloudNativePG (operator + Cluster + Pooler) ---
+    //
+    // Throws on oci-prod until the dedicated `workload=database` node pool is
+    // provisioned in Oracle.cs — see Postgres.cs for the guard. On local, this
+    // brings up a single-instance PG 18 in the `database` namespace with a
+    // PgBouncer pooler in front of it. Opt out with `deployPostgres=false`
+    // when bringing up a stack that doesn't need the database (e.g. iterating
+    // on gateway/agones without paying the CNPG install time).
+    var deployPostgres = config.GetBoolean("deployPostgres") ?? true;
+    var postgres = deployPostgres
+        ? Postgres.Deploy(
+            config,
+            k8s,
+            provisionOke,
+            cnpgNamespaceName: "cnpg-system",
+            databaseNamespaceName: "database",
+            monitoringDependency: monitoring.Release,
+            providerOpts: providerOpts)
+        : null;
 
-    var monitoring = new HelmRelease("kube-prometheus-stack", new HelmReleaseArgs
-    {
-        // The release name is referenced by the lobbies/game ServiceMonitor/PodMonitor
-        // selectors (release=monitoring) and by the in-cluster Service DNS names
-        // (monitoring-grafana, monitoring-kube-prometheus-prometheus, …). Don't
-        // rename without updating those callers.
-        Name = "monitoring",
-        Chart = "kube-prometheus-stack",
-        Version = kubePrometheusStackVersion,
-        RepositoryOpts = new V3RepositoryOptsArgs
-        {
-            Repo = "https://prometheus-community.github.io/helm-charts",
-        },
-        Namespace = monitoringNamespaceName,
-        Values = Monitoring.BuildValues(monitoringProfile, monitoringStorageClass),
-    }, new CustomResourceOptions
-    {
-        Provider = k8s,
-        DependsOn = { monitoringNs },
-    });
+    // Envoy Gateway: CRDs, controller, `envoy` GatewayClass, `main` Gateway, and
+    // ServiceMonitor/PodMonitor bridges into kube-prometheus-stack. On OCI also
+    // installs the `oci-nlb` EnvoyProxy CR that pins the Gateway to the cluster's
+    // OCI Network Load Balancer (reserved IP + subnet + NSG). Controller chart
+    // values live in infra/values/{common,local,oci-prod}/envoy-gateway.yaml.
+    var envoyGateway = EnvoyGateway.Deploy(
+        config, k8s, oci,
+        monitoringNamespace: monitoringNamespaceName,
+        monitoringDependency: monitoring.Release,
+        cfProvider: cfProvider,
+        cfApexDomain: cfApexDomain,
+        providerOpts);
 
-    var envoyGatewayNamespaceName = PrefixedNs("envoy-gateway-system");
-
-    var ns = new Namespace("envoy-gateway-system", new NamespaceArgs
-    {
-        Metadata = new ObjectMetaArgs
-        {
-            Name = envoyGatewayNamespaceName,
-        },
-    }, providerOpts);
-
-    var crds = new Chart("envoy-gateway-crds", new ChartArgs
-    {
-        Chart = "oci://docker.io/envoyproxy/gateway-crds-helm",
-        Version = envoyGatewayVersion,
-        Namespace = ns.Metadata.Apply(m => m.Name!),
-        Values = new InputMap<object>
-        {
-            ["crds"] = new Dictionary<string, object>
-            {
-                ["gatewayAPI"] = new Dictionary<string, object>
-                {
-                    ["enabled"] = true,
-                    ["channel"] = gatewayApiChannel,
-                },
-                ["envoyGateway"] = new Dictionary<string, object>
-                {
-                    ["enabled"] = true,
-                },
-            },
-        },
-    }, new ComponentResourceOptions
-    {
-        Provider = k8s,
-        DependsOn = { ns },
-    });
-
-    // The Envoy Gateway controller chart ships its TLS bootstrap as a Helm pre-install
-    // hook (envoy-gateway-certgen Job -> envoy-gateway Secret). helm.v4.Chart renders
-    // like `helm template` and drops hooks, so the cert Secret never gets created and
-    // the controller Pod hangs on a missing volume. Release runs hooks via the
-    // embedded Helm SDK, so use it for anything that depends on install-time hooks.
-    // For OCI registries the full `oci://...` URL goes in `Chart` directly. Using
-    // `RepositoryOpts.Repo` triggers a `helm repo add` flow that isn't valid for OCI
-    // (OCI bundles registry + chart in one reference).
-    var envoyGatewayValues = new Dictionary<string, object>();
-    if (systemNodeSelector is not null)
-    {
-        envoyGatewayValues["deployment"] = new Dictionary<string, object>
-        {
-            ["pod"] = new Dictionary<string, object>
-            {
-                ["nodeSelector"] = systemNodeSelector,
-            },
-        };
-        // certgen is a Helm pre-install Job that creates the controller's TLS
-        // bootstrap Secret. Pin it too so it doesn't transiently consume capacity
-        // on a workload node pool during install.
-        envoyGatewayValues["certgen"] = new Dictionary<string, object>
-        {
-            ["job"] = new Dictionary<string, object>
-            {
-                ["nodeSelector"] = systemNodeSelector,
-            },
-        };
-    }
-
-    var controller = new HelmRelease("envoy-gateway", new HelmReleaseArgs
-    {
-        Chart = "oci://docker.io/envoyproxy/gateway-helm",
-        Version = envoyGatewayVersion,
-        Namespace = ns.Metadata.Apply(m => m.Name!),
-        SkipCrds = true,
-        Values = envoyGatewayValues,
-    }, new CustomResourceOptions
-    {
-        Provider = k8s,
-        DependsOn = { crds },
-    });
-
-    var agonesNamespaceName = PrefixedNs("agones-system");
-
-    var agonesNs = new Namespace("agones-system", new NamespaceArgs
-    {
-        Metadata = new ObjectMetaArgs
-        {
-            Name = agonesNamespaceName,
-        },
-    }, providerOpts);
-
-    // CRDs are bundled in this chart's templates (not under `crds/`), so a single
-    // Release covers both. Single-replica controller/allocator keeps the footprint
-    // small. ClusterIP for the allocator since the lobby calls Agones in-cluster via
-    // the K8s API. Ping is disabled — clients don't query Agones in our architecture.
-    var agonesController = new Dictionary<string, object> { ["replicas"] = 1 };
-    var agonesAllocator = new Dictionary<string, object>
-    {
-        ["replicas"] = 1,
-        ["service"] = new Dictionary<string, object>
-        {
-            ["serviceType"] = "ClusterIP",
-        },
-    };
-    var agonesExtensions = new Dictionary<string, object>();
-    if (systemNodeSelector is not null)
-    {
-        agonesController["nodeSelector"] = systemNodeSelector;
-        agonesAllocator["nodeSelector"] = systemNodeSelector;
-        agonesExtensions["nodeSelector"] = systemNodeSelector;
-    }
-
-    var agones = new HelmRelease("agones", new HelmReleaseArgs
-    {
-        Name = "agones",
-        Chart = "agones",
-        Version = agonesVersion,
-        RepositoryOpts = new V3RepositoryOptsArgs
-        {
-            Repo = "https://agones.dev/chart/stable",
-        },
-        Namespace = agonesNs.Metadata.Apply(m => m.Name!),
-        Values = new InputMap<object>
-        {
-            ["agones"] = new Dictionary<string, object>
-            {
-                ["controller"] = agonesController,
-                ["allocator"] = agonesAllocator,
-                ["extensions"] = agonesExtensions,
-                ["ping"] = new Dictionary<string, object>
-                {
-                    ["install"] = false,
-                },
-                // The Agones chart ships its own ServiceMonitor (covers
-                // controller, allocator, extensions). Toggle it on so the
-                // kube-prometheus-stack release scrapes Agones automatically —
-                // no extra resources to maintain on our side.
-                ["metrics"] = new Dictionary<string, object>
-                {
-                    ["serviceMonitor"] = new Dictionary<string, object>
-                    {
-                        ["enabled"] = true,
-                        ["interval"] = "30s",
-                    },
-                },
-            },
-        },
-    }, new CustomResourceOptions
-    {
-        Provider = k8s,
-        // monitoring must be in place before Agones — the chart's metrics
-        // ServiceMonitor depends on the Prometheus Operator CRDs that
-        // kube-prometheus-stack installs.
-        DependsOn = { agonesNs, monitoring },
-    });
-
-    // On OCI, an EnvoyProxy config tells the OKE cloud-controller to expose the Gateway
-    // through an OCI Network Load Balancer (L4 pass-through) instead of the classic LB.
-    // `is-preserve-source` keeps the client IP and needs externalTrafficPolicy: Local.
-    Pulumi.Kubernetes.ApiExtensions.CustomResource? envoyProxy = null;
-    if (oci is not null)
-    {
-        envoyProxy = new Pulumi.Kubernetes.ApiExtensions.CustomResource("oci-nlb-envoyproxy", new EnvoyProxyArgs
-        {
-            Metadata = new ObjectMetaArgs
-            {
-                Name = "oci-nlb",
-                Namespace = envoyGatewayNamespaceName,
-            },
-            Spec = new Dictionary<string, object>
-            {
-                ["provider"] = new Dictionary<string, object>
-                {
-                    ["type"] = "Kubernetes",
-                    ["kubernetes"] = new Dictionary<string, object>
-                    {
-                        // Pin the data-plane Envoy pods to the system pool. With
-                        // externalTrafficPolicy: Local the NLB will only forward to
-                        // nodes running an Envoy pod, so this also concentrates
-                        // ingress on `system` — fine while Envoy is single-replica.
-                        ["envoyDeployment"] = new Dictionary<string, object>
-                        {
-                            ["pod"] = new Dictionary<string, object>
-                            {
-                                ["nodeSelector"] = new Dictionary<string, object>
-                                {
-                                    ["workload"] = "system",
-                                },
-                            },
-                        },
-                        ["envoyService"] = new Dictionary<string, object>
-                        {
-                            ["type"] = "LoadBalancer",
-                            ["externalTrafficPolicy"] = "Local",
-                            ["annotations"] = new Dictionary<string, object>
-                            {
-                                ["oci.oraclecloud.com/load-balancer-type"] = "nlb",
-                                ["oci.oraclecloud.com/reserved-ips"] = oci.NlbReservedIp,
-                                ["oci-network-load-balancer.oraclecloud.com/subnet"] = oci.NlbSubnetId,
-                                ["oci-network-load-balancer.oraclecloud.com/oci-network-security-groups"] = oci.NlbNsgId,
-                                ["oci-network-load-balancer.oraclecloud.com/is-preserve-source"] = "false",
-                            },
-                        },
-                    },
-                },
-            },
-        }, new CustomResourceOptions
-        {
-            Provider = k8s,
-            DependsOn = { crds },
-        });
-    }
-
-    // Envoy Gateway v1.x doesn't ship a default GatewayClass — declare one explicitly.
-    // On OCI it references the EnvoyProxy above so the Gateway inherits the NLB config.
-    var parametersRefYaml = oci is not null
-        ? $@"
-  parametersRef:
-    group: gateway.envoyproxy.io
-    kind: EnvoyProxy
-    name: oci-nlb
-    namespace: {envoyGatewayNamespaceName}"
-        : "";
-
-    var gatewayClassYaml = $@"
-apiVersion: gateway.networking.k8s.io/v1
-kind: GatewayClass
-metadata:
-  name: envoy
-spec:
-  controllerName: gateway.envoyproxy.io/gatewayclass-controller{parametersRefYaml}
-";
-
-    var gatewayClassOpts = new ComponentResourceOptions
-    {
-        Provider = k8s,
-        DependsOn = { controller },
-    };
-    if (envoyProxy is not null)
-        gatewayClassOpts.DependsOn.Add(envoyProxy);
-
-    var gatewayClass = new ConfigGroup("envoy-gateway-class", new ConfigGroupArgs
-    {
-        Yaml = gatewayClassYaml,
-    }, gatewayClassOpts);
-
-    // external-dns derives a record's target from the Gateway's address. On OCI the
-    // cloud-controller reports the NLB's *private* in-subnet IP there, which Cloudflare
-    // rejects for a proxied record — so pin the target to the NLB's reserved *public*
-    // IP via the external-dns target annotation (read on the Gateway, not on Routes).
-    var gatewayAnnotationsYaml = oci is not null
-        ? Output.Format($@"
-  annotations:
-    external-dns.alpha.kubernetes.io/target: {oci.NlbReservedIp}")
-        : Output.Create("");
-
-    var gatewayYaml = Output.Format($@"
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: main
-  namespace: {envoyGatewayNamespaceName}{gatewayAnnotationsYaml}
-spec:
-  gatewayClassName: envoy
-  listeners:
-    - name: http
-      port: 80
-      protocol: HTTP
-      allowedRoutes:
-        namespaces:
-          from: All
-");
-
-    var gateway = new ConfigGroup("main-gateway", new ConfigGroupArgs
-    {
-        Yaml = gatewayYaml,
-    }, new ComponentResourceOptions
-    {
-        Provider = k8s,
-        DependsOn = { controller, gatewayClass },
-    });
+    // Agones operator + CRDs. Must run after monitoring — the chart's
+    // metrics ServiceMonitor depends on the Prometheus Operator CRDs that
+    // kube-prometheus-stack installs. Chart values (replicas, allocator
+    // service type, ping toggle, ServiceMonitor toggle, nodeSelectors) live
+    // in infra/values/{common,local,oci-prod}/agones.yaml.
+    var agones = Agones.Deploy(
+        config,
+        k8s,
+        agonesNamespaceName: "agones-system",
+        monitoringDependency: monitoring.Release,
+        providerOpts: providerOpts);
 
     var isLocal = Deployment.Instance.StackName == "local";
 
@@ -385,7 +160,7 @@ spec:
         var registryPassword = config.RequireSecret("registryPassword");
         var registryStorageSize = config.Get("registryStorageSize") ?? "20Gi";
 
-        var registryNamespaceName = PrefixedNs("registry");
+        var registryNamespaceName = "registry";
 
         var registryNs = new Namespace("registry-ns", new NamespaceArgs
         {
@@ -456,7 +231,7 @@ metadata:
 spec:
   parentRefs:
     - name: main
-      namespace: {envoyGatewayNamespaceName}
+      namespace: {envoyGateway.Namespace}
   hostnames:
     - {registryHostname}
   rules:
@@ -475,108 +250,30 @@ spec:
         }, new ComponentResourceOptions
         {
             Provider = k8s,
-            DependsOn = { registry, gateway },
+            DependsOn = { registry, envoyGateway.Gateway },
         });
     }
 
-    // Cloudflare front-door: external-dns syncs Cloudflare DNS records straight from
-    // the Gateway API HTTPRoutes — hostnames live only in the app charts, and the
-    // record targets the Gateway's address (the NLB's reserved IP). It only deploys
-    // once the Cloudflare API token and zone domain are configured.
-    if (provisionOke)
+    // Cloudflare front-door: external-dns syncs Cloudflare DNS records straight
+    // from the Gateway API HTTPRoutes — hostnames live only in the app charts,
+    // and the record targets the Gateway's address (the NLB's reserved IP).
+    // Only deploys when the API token is configured. Chart values live in
+    // infra/values/oci-prod/external-dns.yaml.
+    if (provisionOke && cfToken is not null)
     {
-        var cfToken = config.GetSecret("cloudflareApiToken");
-        var cfDomain = config.Get("cloudflareDomainFilter");
-
-        if (cfToken is not null && cfDomain is not null)
-        {
-            var externalDnsNamespaceName = PrefixedNs("external-dns");
-
-            var externalDnsNs = new Namespace("external-dns", new NamespaceArgs
-            {
-                Metadata = new ObjectMetaArgs { Name = externalDnsNamespaceName },
-            }, providerOpts);
-
-            var cloudflareSecret = new Secret("external-dns-cloudflare", new SecretArgs
-            {
-                Metadata = new ObjectMetaArgs
-                {
-                    Name = "external-dns-cloudflare",
-                    Namespace = externalDnsNamespaceName,
-                },
-                StringData = { ["cloudflare_api_token"] = cfToken },
-            }, new CustomResourceOptions { Provider = k8s, DependsOn = { externalDnsNs } });
-
-            // Tight resource caps — external-dns is a small controller that watches a
-            // handful of routes and reconciles on an interval; it barely registers.
-            var externalDns = new HelmRelease("external-dns", new HelmReleaseArgs
-            {
-                Name = "external-dns",
-                Chart = "external-dns",
-                RepositoryOpts = new V3RepositoryOptsArgs
-                {
-                    Repo = "https://kubernetes-sigs.github.io/external-dns/",
-                },
-                Namespace = externalDnsNamespaceName,
-                Values = new InputMap<object>
-                {
-                    ["provider"] = new Dictionary<string, object> { ["name"] = "cloudflare" },
-                    ["sources"] = new[] { "gateway-httproute" },
-                    ["domainFilters"] = new[] { cfDomain },
-                    ["policy"] = "sync",
-                    ["txtOwnerId"] = "yarg-online-oci",
-                    ["extraArgs"] = new[] { "--cloudflare-proxied" },
-                    ["env"] = new object[]
-                    {
-                        new Dictionary<string, object>
-                        {
-                            ["name"] = "CF_API_TOKEN",
-                            ["valueFrom"] = new Dictionary<string, object>
-                            {
-                                ["secretKeyRef"] = new Dictionary<string, object>
-                                {
-                                    ["name"] = "external-dns-cloudflare",
-                                    ["key"] = "cloudflare_api_token",
-                                },
-                            },
-                        },
-                    },
-                    ["resources"] = new Dictionary<string, object>
-                    {
-                        ["requests"] = new Dictionary<string, object>
-                        {
-                            ["cpu"] = "10m",
-                            ["memory"] = "64Mi",
-                        },
-                        ["limits"] = new Dictionary<string, object>
-                        {
-                            ["memory"] = "128Mi",
-                        },
-                    },
-                    ["nodeSelector"] = new Dictionary<string, object>
-                    {
-                        ["workload"] = "system",
-                    },
-                },
-            }, new CustomResourceOptions
-            {
-                Provider = k8s,
-                DependsOn = { crds, cloudflareSecret },
-            });
-        }
+        ExternalDns.Deploy(
+            config,
+            k8s,
+            cloudflareApiToken: cfToken,
+            envoyGatewayCrds: envoyGateway.Crds,
+            providerOpts: providerOpts);
     }
 
     // Dashboards (downloaded by Download-Dashboards.ps1) become labeled
     // ConfigMaps in the monitoring namespace; the Grafana sidecar picks them
     // up automatically. If the directory is empty (a developer hasn't run the
     // download script), Grafana still has its chart-bundled dashboards.
-    Monitoring.InstallDashboards(k8s, monitoringNamespaceName, monitoring);
-
-    // Envoy Gateway's upstream chart only emits prometheus.io/scrape
-    // annotations on its pods — kube-prometheus-stack doesn't honor those.
-    // Bridge with proper ServiceMonitor / PodMonitor resources.
-    Monitoring.InstallEnvoyGatewayMonitors(
-        k8s, envoyGatewayNamespaceName, monitoringNamespaceName, monitoring);
+    Monitoring.InstallDashboards(k8s, monitoringNamespaceName, monitoring.Release);
 
     if (provisionOke)
     {
@@ -584,21 +281,15 @@ spec:
         //
         // Outbound-only path into Grafana. Cloudflare Access (configured once
         // out-of-band in the Zero Trust dashboard) authenticates at the edge.
-        // Reuses the existing cloudflareApiToken used for external-dns; that
-        // token's scope must include Account.Cloudflare Tunnel:Edit and
-        // Account Settings:Read in addition to its existing Zone.DNS:Edit.
-        var cfToken = config.GetSecret("cloudflareApiToken");
+        // Reuses the cfProvider hoisted above (same token as external-dns and
+        // the Envoy Gateway Origin CA cert).
         var cfAccountId = config.Get("cloudflareAccountId");
         var cfZoneId = config.Get("cloudflareZoneId");
         var grafanaHostname = config.Get("grafanaHostname");
 
-        if (cfToken is not null && cfAccountId is not null && cfZoneId is not null
+        if (cfProvider is not null && cfAccountId is not null && cfZoneId is not null
             && grafanaHostname is not null)
         {
-            var cfProvider = new Cloudflare.Provider("cloudflare", new Cloudflare.ProviderArgs
-            {
-                ApiToken = cfToken,
-            });
             var cfOpts = new CustomResourceOptions { Provider = cfProvider };
             // Invokes (data sources) need their own options bag — CustomResourceOptions
             // applies to resource creations only, so Invoke calls fall through to a
@@ -617,9 +308,7 @@ spec:
                 new Cloudflare.ZeroTrustTunnelCloudflaredArgs
                 {
                     AccountId = cfAccountId,
-                    Name = string.IsNullOrEmpty(namespacePrefix)
-                        ? "grafana"
-                        : $"{namespacePrefix}-grafana",
+                    Name = "grafana",
                     // Remote-managed config — the ingress rules below live in
                     // Cloudflare's API, not in a local config.yaml on the connector.
                     ConfigSrc = "cloudflare",
@@ -743,7 +432,7 @@ spec:
             }
 
             // In-cluster cloudflared agent.
-            var cloudflaredNamespaceName = PrefixedNs("cloudflared");
+            var cloudflaredNamespaceName = "cloudflared";
             var cloudflaredNs = new Namespace("cloudflared", new NamespaceArgs
             {
                 Metadata = new ObjectMetaArgs { Name = cloudflaredNamespaceName },
@@ -882,7 +571,7 @@ metadata:
 spec:
   parentRefs:
     - name: main
-      namespace: {envoyGatewayNamespaceName}
+      namespace: {envoyGateway.Namespace}
   hostnames:
     - {grafanaHostname}
   rules:
@@ -901,32 +590,140 @@ spec:
             }, new ComponentResourceOptions
             {
                 Provider = k8s,
-                DependsOn = { monitoring, gateway },
+                DependsOn = { monitoring.Release, envoyGateway.Gateway },
             });
         }
     }
 
+    // --- H-4 bastion tunnel helpers (local functions, hoisted) ---
+
+    static string BuildTunnelCreateScript(string keyPath, string sessionId, string bastionHost, string apiIp)
+    {
+        // PowerShell single-quotes do not interpolate; escape any embedded single quotes
+        // in the path by doubling. Session ID, bastion host, and API IP are
+        // OCIDs / fixed FQDNs / IPs — no metacharacters to escape.
+        var escapedKey = keyPath.Replace("'", "''");
+        return $@"
+$ErrorActionPreference = 'Stop'
+$keyPath = '{escapedKey}'
+$sessionId = '{sessionId}'
+$bastionHost = '{bastionHost}'
+$apiIp = '{apiIp}'
+$pidFile = '.tunnel.pid'
+
+function Test-TunnelUp {{
+    return (Test-NetConnection -ComputerName 127.0.0.1 -Port 6443 -InformationLevel Quiet -WarningAction SilentlyContinue)
+}}
+
+# Idempotent: if the local forward port is already listening and our .tunnel.pid
+# still points at a live process, an earlier `pulumi up` (or the helper script)
+# left a working tunnel — leave it alone.
+if ((Test-TunnelUp) -and (Test-Path $pidFile)) {{
+    $existingPid = Get-Content $pidFile
+    if (Get-Process -Id $existingPid -ErrorAction SilentlyContinue) {{
+        Write-Host 'oke-api-tunnel: already up on 127.0.0.1:6443'
+        exit 0
+    }}
+}}
+
+# Stale PID file from a crashed run — clean up before relaunching.
+if (Test-Path $pidFile) {{
+    $stalePid = Get-Content $pidFile
+    Stop-Process -Id $stalePid -Force -ErrorAction SilentlyContinue
+    Remove-Item $pidFile -ErrorAction SilentlyContinue
+}}
+
+$sshArgs = @(
+    '-i', $keyPath,
+    '-N',
+    '-L', ('6443:{{0}}:6443' -f $apiIp),
+    '-o', 'StrictHostKeyChecking=accept-new',
+    '-o', 'ServerAliveInterval=30',
+    '-p', '22',
+    ('{{0}}@{{1}}' -f $sessionId, $bastionHost)
+)
+$proc = Start-Process -FilePath ssh -ArgumentList $sshArgs -PassThru -WindowStyle Hidden
+$proc.Id | Out-File -Encoding ascii $pidFile
+
+for ($i = 0; $i -lt 30; $i++) {{
+    if (Test-TunnelUp) {{
+        Write-Host 'oke-api-tunnel: up on 127.0.0.1:6443'
+        exit 0
+    }}
+    Start-Sleep -Seconds 1
+}}
+
+# Fail loud so Pulumi reports the error rather than racing downstream K8s reconciles.
+Write-Error 'oke-api-tunnel: local forward did not come up within 30s on 127.0.0.1:6443'
+exit 1
+".Replace("\r\n", "\n");
+    }
+
+    static string BuildTunnelDeleteScript()
+    {
+        return @"
+if (Test-Path .tunnel.pid) {
+    Stop-Process -Id (Get-Content .tunnel.pid) -Force -ErrorAction SilentlyContinue
+    Remove-Item .tunnel.pid -ErrorAction SilentlyContinue
+}
+".Replace("\r\n", "\n");
+    }
+
+    static string PatchKubeconfigForPortForward(string yaml)
+    {
+        // OKE's kubeconfig has one `server: https://<host>:6443` line per cluster
+        // entry. Rewrite it to point at the local ssh -L forward (127.0.0.1:6443)
+        // and add a sibling `tls-server-name: <original-host>` so client-go's TLS
+        // verification still matches the API server cert's SANs (which include
+        // both the FQDN and the private IP, but not 127.0.0.1).
+        var normalized = yaml.Replace("\r\n", "\n");
+        var matched = false;
+        var pattern = new System.Text.RegularExpressions.Regex(
+            @"^(?<indent>[ \t]+)server:[ \t]+https://(?<host>[^\s:/]+)(:(?<port>\d+))?[ \t]*\n",
+            System.Text.RegularExpressions.RegexOptions.Multiline);
+        var patched = pattern.Replace(normalized, m =>
+        {
+            matched = true;
+            var indent = m.Groups["indent"].Value;
+            var host = m.Groups["host"].Value;
+            return $"{indent}server: https://127.0.0.1:6443\n" +
+                   $"{indent}tls-server-name: {host}\n";
+        });
+        if (!matched)
+        {
+            throw new InvalidOperationException(
+                "Failed to rewrite OKE kubeconfig — no `server: https://...` line found. " +
+                "The kubeconfig format may have changed.");
+        }
+        return patched;
+    }
+
     return new Dictionary<string, object?>
     {
-        ["namespace"] = ns.Metadata.Apply(m => m.Name!),
-        ["envoyGatewayVersion"] = envoyGatewayVersion,
-        ["agonesNamespace"] = agonesNs.Metadata.Apply(m => m.Name!),
-        ["agonesVersion"] = agonesVersion,
+        ["namespace"] = envoyGateway.Namespace,
+        ["envoyGatewayVersion"] = envoyGateway.Version,
+        ["agonesNamespace"] = agones.Namespace,
+        ["agonesVersion"] = agones.Version,
         ["monitoringNamespace"] = monitoringNamespaceName,
-        ["kubePrometheusStackVersion"] = kubePrometheusStackVersion,
+        ["kubePrometheusStackVersion"] = monitoring.Version,
         ["registryEnabled"] = isLocal,
         ["registryHostname"] = isLocal ? (object?)registryHostname : null,
         ["clusterId"] = oci?.ClusterId,
         ["lobbiesRepositoryId"] = oci?.LobbiesRepositoryId,
         ["gameRepositoryId"] = oci?.GameRepositoryId,
+        // Surfaced for Open-BastionTunnel.ps1 — the helper reads these via
+        // `pulumi stack output` to reopen the SOCKS5 tunnel between `pulumi up`s.
+        ["bastionSessionId"] = oci?.BastionSessionId,
+        ["bastionHost"] = oci?.BastionHost,
+        ["apiEndpointIp"] = oci?.ApiEndpointIp,
+        // The kubeconfig already includes the SOCKS5 proxy-url injection — the
+        // operator can dump it to disk and point KUBECONFIG at it. Marked as a
+        // secret because it carries the cluster CA bundle and exec credentials.
+        ["kubeConfig"] = oci is null ? null : Output.CreateSecret(
+            oci.KubeConfig.Apply(PatchKubeconfigForPortForward)),
+        ["postgresEnabled"] = deployPostgres,
+        ["postgresNamespace"] = postgres?.DatabaseNamespace,
+        ["postgresPoolerHost"] = postgres?.PoolerHost,
+        ["postgresPoolerPort"] = (object?)postgres?.PoolerPort,
     };
 });
-
-/// <summary>Args for the Envoy Gateway `EnvoyProxy` CRD instance (no typed SDK).</summary>
-sealed class EnvoyProxyArgs : Pulumi.Kubernetes.ApiExtensions.CustomResourceArgs
-{
-    [Pulumi.Input("spec")]
-    public Pulumi.Input<object>? Spec { get; set; }
-
-    public EnvoyProxyArgs() : base("gateway.envoyproxy.io/v1alpha1", "EnvoyProxy") { }
-}

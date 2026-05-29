@@ -19,7 +19,7 @@ httpRoute:
   hostname: lobbies.chandler-compute-1
   parentRef:
     name: main
-    namespace: yarg-online-local-envoy-gateway-system
+    namespace: envoy-gateway-system
 
 # A dedicated, cluster-internal Gateway (ClusterIP Envoy) for the game-server
 # callback endpoints under /api/v1/lobbies. Created in httpRoute.parentRef.namespace.
@@ -34,7 +34,7 @@ internalGateway:
 # in; oci-prod overrides it.
 networkPolicy:
   enabled: true
-  gameServerNamespace: yarg-online-local-game
+  gameServerNamespace: game
 
 # When enabled, renders ServiceAccount + Role + RoleBinding granting the lobbies pod
 # permission to create GameServerAllocations and patch GameServers in the configured
@@ -42,7 +42,7 @@ networkPolicy:
 # runtime and selects the Agones allocator implementation.
 agones:
   enabled: true
-  gameServerNamespace: default
+  gameServerNamespace: game
   fleetName: game-fleet
   slotsKey: slots
 
@@ -52,12 +52,12 @@ agones:
 # kube-prometheus-stack release namespace — the NetworkPolicy opens the http
 # port to it so Prometheus can scrape.
 monitoring:
-  namespace: yarg-online-local-monitoring
+  namespace: monitoring
   serviceMonitor:
     enabled: true
     interval: 15s
     scrapeTimeout: 10s
 
-# Populated by values.local.yaml (gitignored). Each key/value is rendered into
-# a Secret consumed by the deployment via envFrom.
+# Populated per-environment from values/<env>/lobbies(.secrets).yaml. Each
+# key/value is rendered into a Secret consumed by the deployment via envFrom.
 secrets: {}

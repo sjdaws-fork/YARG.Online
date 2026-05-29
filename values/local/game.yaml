@@ -1,0 +1,7 @@
+# Dev secrets for the local Skaffold profile. MUST stay in sync with
+# values/local/lobbies.yaml: identical GameAuth__* values (the lobby signs
+# JWTs the game pod has to validate).
+secrets:
+  GameAuth__Issuer: yarg-online-game-dev
+  GameAuth__Audience: yarg-online-game-dev
+  GameAuth__SigningSecret: dev-only-game-secret-do-not-use-in-prod-32b+++

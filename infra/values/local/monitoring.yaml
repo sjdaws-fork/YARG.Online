@@ -1,0 +1,77 @@
+# Local k3s sizing for kube-prometheus-stack. Small workstation footprint;
+# no nodeSelector because k3s is single-node and unmatched workload labels
+# would leave pods Pending. Merged on top of values/common/monitoring.yaml.
+
+prometheus:
+  prometheusSpec:
+    resources:
+      requests:
+        cpu: 300m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 5Gi
+
+grafana:
+  # Grafana 13's startup peaks well over 256Mi (apiserver init, ~50 plugin
+  # loads, ngalert + ngalert.notifier setup); idle settles to ~150–200Mi.
+  # 128Mi OOMKills during boot.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  persistence:
+    enabled: true
+    storageClassName: local-path
+    accessModes: [ReadWriteOnce]
+    size: 2Gi
+
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 20m
+        memory: 32Mi
+      limits:
+        memory: 64Mi
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 1Gi
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      memory: 64Mi
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
