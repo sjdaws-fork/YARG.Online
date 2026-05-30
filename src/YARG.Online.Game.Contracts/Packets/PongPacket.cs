@@ -9,7 +9,7 @@ namespace YARG.Online.Game.Contracts.Packets;
 //   rtt    = receiveLocalUtcMs - ClientTickMs   (both sampled by the client)
 //   offset = ServerUtcMs + rtt/2 - receiveLocalUtcMs
 // Then serverEstimatedUtcMs = localUtcMs + offset for any later instant.
-public struct PongPacket : INetSerializable
+public class PongPacket : INetSerializable
 {
     public long ClientTickMs { get; set; }
     public long ServerUtcMs { get; set; }

@@ -10,7 +10,7 @@ namespace YARG.Online.Game.Contracts.Packets;
 // PitchMidi is the engine's last sang pitch as a MIDI note number (matches
 // VocalsEngine.PitchSang). 0f means "no pitch detected this frame" — used as
 // a sentinel; pair with IsSinging to disambiguate "silent" from "valid 0 midi".
-public struct VocalPitchPacket : INetSerializable
+public class VocalPitchPacket : INetSerializable
 {
     public int PeerId { get; set; }
     public double SongTime { get; set; }

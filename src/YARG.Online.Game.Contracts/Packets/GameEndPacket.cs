@@ -2,7 +2,7 @@ using LiteNetLib.Utils;
 
 namespace YARG.Online.Game.Contracts.Packets;
 
-public struct GameEndPacket : INetSerializable
+public class GameEndPacket : INetSerializable
 {
     public void Serialize(NetDataWriter writer)
     {

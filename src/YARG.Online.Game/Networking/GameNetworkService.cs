@@ -587,7 +587,7 @@ public sealed class GameNetworkService : BackgroundService
 
     private void HandleNoteMissed(NetPeer peer, NetPacketReader reader) =>
         FanoutPerEvent<NoteMissedPacket>(peer, reader,
-            PacketOpcode.NoteMissed, DeliveryMethod.Unreliable,
+            PacketOpcode.NoteMissed, DeliveryMethod.ReliableOrdered,
             static (p, id) => p.PeerId = id);
 
     private void HandleStarPowerActivated(NetPeer peer, NetPacketReader reader) =>
@@ -622,7 +622,7 @@ public sealed class GameNetworkService : BackgroundService
 
     private void HandleNoteHit(NetPeer peer, NetPacketReader reader) =>
         FanoutPerEvent<NoteHitPacket>(peer, reader,
-            PacketOpcode.NoteHit, DeliveryMethod.Unreliable,
+            PacketOpcode.NoteHit, DeliveryMethod.ReliableOrdered,
             static (p, id) => p.PeerId = id);
 
     private void HandleEngineStateSnapshot(NetPeer peer, NetPacketReader reader) =>

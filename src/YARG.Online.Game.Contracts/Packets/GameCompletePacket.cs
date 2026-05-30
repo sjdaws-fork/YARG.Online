@@ -12,7 +12,7 @@ namespace YARG.Online.Game.Contracts.Packets;
 // (with PeerId stamped) so receivers can rebuild the remote player's
 // ReplayFrame from authoritative inputs — without this, remote replays are
 // empty and the score-screen verifier flags them as inconsistent.
-public struct GameCompletePacket : INetSerializable
+public class GameCompletePacket : INetSerializable
 {
     public GameCompletePacket() { }
 

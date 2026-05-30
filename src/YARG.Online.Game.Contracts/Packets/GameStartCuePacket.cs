@@ -9,7 +9,7 @@ namespace YARG.Online.Game.Contracts.Packets;
 // CountdownMs is a suggested local pre-roll (typically 3000) — clients are free
 // to ignore it and use their own pre-roll, since alignment is keyed off
 // SongOriginUtcMs alone.
-public struct GameStartCuePacket : INetSerializable
+public class GameStartCuePacket : INetSerializable
 {
     public long SongOriginUtcMs { get; set; }
     public int CountdownMs { get; set; }

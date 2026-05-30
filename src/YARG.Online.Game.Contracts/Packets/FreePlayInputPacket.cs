@@ -18,7 +18,7 @@ namespace YARG.Online.Game.Contracts.Packets;
 //   - Guitar: GuitarAction (green / red / yellow / blue / orange fret + strum)
 // Velocity: 0..1, used for drum dynamics (ghost/accent visuals); guitar
 //   senders leave it at 0.
-public struct FreePlayInputPacket : INetSerializable
+public class FreePlayInputPacket : INetSerializable
 {
     public int    PeerId { get; set; }
     public double SongTime { get; set; }

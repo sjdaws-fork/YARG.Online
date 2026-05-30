@@ -13,7 +13,7 @@ namespace YARG.Online.Game.Contracts.Packets;
 // NoteIndex / SongTime semantics match NoteMissedPacket: NoteIndex is the
 // authoritative identifier (stable across peers via chart-hash gating);
 // SongTime is telemetry only.
-public struct NoteHitPacket : INetSerializable
+public class NoteHitPacket : INetSerializable
 {
     public int PeerId { get; set; }
     public int NoteIndex { get; set; }

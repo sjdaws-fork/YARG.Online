@@ -7,7 +7,7 @@ namespace YARG.Online.Game.Contracts.Packets;
 // dropped pre-cue and was removed from the quorum). Drives the
 // DifficultySelect "waiting for players (X/Y)" indicator so the count
 // reflects actual server-side state rather than a client-only guess.
-public struct LoadoutReadyCountPacket : INetSerializable
+public class LoadoutReadyCountPacket : INetSerializable
 {
     public int ReadyCount { get; set; }
     public int TotalExpected { get; set; }
