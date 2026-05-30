@@ -12,9 +12,5 @@ public sealed class EnterLobbyArgsValidator : AbstractValidator<EnterLobbyArgs>
             .NotEmpty()
             .Must(LobbyId.IsValid)
             .WithMessage("Lobby ID is invalid.");
-
-        RuleFor(x => x.Library)
-            .NotNull()
-            .SetValidator(new SongLibraryDtoValidator()!);
     }
 }

@@ -11,6 +11,7 @@ using YARG.Online.Lobbies.Contracts.Rest;
 using YARG.Online.Lobbies.Domain;
 using YARG.Online.Lobbies.Endpoints;
 using YARG.Online.Lobbies.Lobbies;
+using YARG.Online.Lobbies.Validation;
 
 namespace YARG.Online.Lobbies.Hubs;
 
@@ -131,11 +132,11 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
         await base.OnDisconnectedAsync(exception);
     }
 
-    public async Task<CreateLobbyResult> CreateLobby(CreateLobbyArgs args)
+    public async Task<CreateLobbyResult> CreateLobby(CreateLobbyArgs args, IAsyncEnumerable<string[]> library)
     {
         _logger.LogTrace(
-            "CreateLobby: ConnectionId={ConnectionId} Name={Name} GameMode={GameMode} Region={Region} MaxPlayers={MaxPlayers} LibrarySize={LibrarySize}",
-            Context.ConnectionId, args.Name, args.GameMode, args.Region, args.MaxPlayers, args.Library.SongHashes.Length);
+            "CreateLobby: ConnectionId={ConnectionId} Name={Name} GameMode={GameMode} Region={Region} MaxPlayers={MaxPlayers}",
+            Context.ConnectionId, args.Name, args.GameMode, args.Region, args.MaxPlayers);
 
         if (_connections.GetLobby(Context.ConnectionId) is not null)
         {
@@ -155,7 +156,10 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
 
         var (userId, displayName) = Context.User!.RequireCaller();
 
-        var normalizedLibrary = NormalizeLibrary(args.Library);
+        var normalizedLibrary = await DrainLibraryAsync(library, Context.ConnectionAborted);
+        _logger.LogTrace(
+            "CreateLobby library drained: ConnectionId={ConnectionId} LibrarySize={LibrarySize}",
+            Context.ConnectionId, normalizedLibrary.Count);
 
         // ID generation + collision retries live inside the repository so a future Redis-backed
         // implementation can use a single atomic SETNX per attempt instead of the in-memory
@@ -207,11 +211,11 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
         return new CreateLobbyResult(dto);
     }
 
-    public async Task<EnterLobbyResult> EnterLobby(EnterLobbyArgs args)
+    public async Task<EnterLobbyResult> EnterLobby(EnterLobbyArgs args, IAsyncEnumerable<string[]> library)
     {
         _logger.LogTrace(
-            "EnterLobby: ConnectionId={ConnectionId} LobbyId={LobbyId} LibrarySize={LibrarySize}",
-            Context.ConnectionId, args.LobbyId, args.Library.SongHashes.Length);
+            "EnterLobby: ConnectionId={ConnectionId} LobbyId={LobbyId}",
+            Context.ConnectionId, args.LobbyId);
 
         var validation = _enterValidator.Validate(args);
         if (!validation.IsValid)
@@ -232,7 +236,7 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
         }
 
         var (userId, displayName) = Context.User!.RequireCaller();
-        var normalizedLibrary = NormalizeLibrary(args.Library);
+        var normalizedLibrary = await DrainLibraryAsync(library, Context.ConnectionAborted);
         var joinData = await _repo.JoinAsync(lobbyId, userId, displayName, normalizedLibrary, args.Instrument, Context.ConnectionAborted);
 
         _logger.LogTrace(
@@ -715,7 +719,7 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
         // Other outcomes are no-ops or harmless duplicates — no broadcast.
     }
 
-    public async Task UpdateLibrary(UpdateLibraryArgs args)
+    public async Task UpdateLibrary(IAsyncEnumerable<string[]> library)
     {
         var lobbyId = _connections.GetLobby(Context.ConnectionId);
         var userId = _connections.GetUserId(Context.ConnectionId);
@@ -728,16 +732,8 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
             return;
         }
 
-        if (args?.Library is null)
-        {
-            _logger.LogWarning(
-                "UpdateLibrary rejected: ConnectionId={ConnectionId} Reason=null_args",
-                Context.ConnectionId);
-            return;
-        }
-
-        var library = NormalizeLibrary(args.Library);
-        var result = await _repo.UpdatePlayerLibraryAsync(lobbyId, userId, library, Context.ConnectionAborted);
+        var normalized = await DrainLibraryAsync(library, Context.ConnectionAborted);
+        var result = await _repo.UpdatePlayerLibraryAsync(lobbyId, userId, normalized, Context.ConnectionAborted);
 
         _logger.LogTrace(
             "UpdateLibrary outcome: ConnectionId={ConnectionId} LobbyId={LobbyId} UserId={UserId} Outcome={Outcome}",
@@ -1006,12 +1002,35 @@ public sealed class LobbyHub : Hub<ILobbyHubClient>, ILobbyHub
         }
     }
 
-    private static HashSet<string> NormalizeLibrary(SongLibraryDto library)
+    /// <summary>
+    /// Accumulate the streamed song-library chunks into a normalized (lowercased) set,
+    /// validating each hash as it arrives. 
+    /// Throws <c>validation_failed</c> for a malformed hash, an over-large library,
+    /// or an empty library.
+    /// </summary>
+    private static async Task<HashSet<string>> DrainLibraryAsync(
+        IAsyncEnumerable<string[]> library, CancellationToken ct)
     {
         var set = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var hash in library.SongHashes)
+        await foreach (var chunk in library.WithCancellation(ct))
         {
-            set.Add(hash.ToLowerInvariant());
+            if (chunk is null) continue;
+            foreach (var hash in chunk)
+            {
+                if (hash is null || !Sha1Hex.IsMatch(hash))
+                {
+                    throw Hub("validation_failed", "Invalid song hash in library");
+                }
+                set.Add(hash.ToLowerInvariant());
+                if (set.Count > SongLibraryStreaming.MaxHashes)
+                {
+                    throw Hub("validation_failed", "Library too large");
+                }
+            }
+        }
+        if (set.Count == 0)
+        {
+            throw Hub("validation_failed", "Library empty");
         }
         return set;
     }

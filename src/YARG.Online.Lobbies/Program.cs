@@ -164,7 +164,6 @@ builder.Services.AddAuthorization();
 
 builder.Services.AddSignalR(options =>
 {
-    options.MaximumReceiveMessageSize = 32 * 1024 * 1024; // 32 MB
     // TODO(version-gate): remove this filter (and ClientVersionHubFilter.cs) once
     // prod clients ship a build that handles the auth-time 426 (see
     // AuthEndpoints.IssueDevToken).
@@ -262,16 +261,7 @@ app.MapPrometheusScrapingEndpoint("/metrics").AllowAnonymous();
 app.MapAuthEndpoints(app.Environment);
 app.MapGameLifecycleEndpoints();
 
-// Restrict the hub to WebSockets only — no Server-Sent-Events / long-polling
-// fallbacks. This pairs with the client's SkipNegotiation + WebSockets
-// transport setting to eliminate sticky-session affinity entirely: every
-// connection is a single persistent WebSocket from the first byte, so a
-// load balancer can round-robin across backend nodes without breaking
-// ongoing connections.
-app.MapHub<LobbyHub>(HubRoutes.Lobby, options =>
-{
-    options.Transports = HttpTransportType.WebSockets;
-}).RequireAuthorization();
+app.MapHub<LobbyHub>(HubRoutes.Lobby).RequireAuthorization();
 
 app.MapGet("/", () => Results.Redirect("/openapi/v1.json")).ExcludeFromDescription();
 

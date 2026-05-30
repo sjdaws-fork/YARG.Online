@@ -11,8 +11,7 @@ public sealed record CreateLobbyArgs(
     GameMode GameMode,
     Region Region,
     string? Song,
-    int MaxPlayers,
-    SongLibraryDto Library)
+    int MaxPlayers)
 {
     /// <summary>Caller's selected instrument as a YARG.Core.Instrument byte. 0 if unspecified.</summary>
     public byte Instrument { get; init; }
@@ -28,7 +27,7 @@ public sealed record CreateLobbyArgs(
 
 public sealed record CreateLobbyResult(LobbyDto Lobby);
 
-public sealed record EnterLobbyArgs(string LobbyId, SongLibraryDto Library)
+public sealed record EnterLobbyArgs(string LobbyId)
 {
     /// <summary>Caller's selected instrument as a YARG.Core.Instrument byte. 0 if unspecified.</summary>
     public byte Instrument { get; init; }
@@ -88,5 +87,3 @@ public sealed record RemoveQueuedSongArgs(long Sequence);
 public sealed record TransferHostArgs(string TargetUserId);
 
 public sealed record KickPlayerArgs(string TargetUserId);
-
-public sealed record UpdateLibraryArgs(SongLibraryDto Library);

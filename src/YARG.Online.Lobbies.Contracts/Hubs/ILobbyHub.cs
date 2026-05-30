@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Threading.Tasks;
 
 namespace YARG.Online.Lobbies.Contracts.Hubs;
@@ -10,8 +11,8 @@ namespace YARG.Online.Lobbies.Contracts.Hubs;
 /// </summary>
 public interface ILobbyHub
 {
-    Task<CreateLobbyResult> CreateLobby(CreateLobbyArgs args);
-    Task<EnterLobbyResult> EnterLobby(EnterLobbyArgs args);
+    Task<CreateLobbyResult> CreateLobby(CreateLobbyArgs args, IAsyncEnumerable<string[]> library);
+    Task<EnterLobbyResult> EnterLobby(EnterLobbyArgs args, IAsyncEnumerable<string[]> library);
     Task LeaveLobby();
     Task SendChatMessage(SendChatMessageArgs args);
     Task<QueuedSongDto> QueueSong(QueueSongArgs args);
@@ -40,5 +41,5 @@ public interface ILobbyHub
     /// <see cref="ILobbyHubClient.OnQueuedSongAvailabilityChanged"/> deltas for
     /// queued songs the caller now does (or no longer does) have locally.
     /// </summary>
-    Task UpdateLibrary(UpdateLibraryArgs args);
+    Task UpdateLibrary(IAsyncEnumerable<string[]> library);
 }

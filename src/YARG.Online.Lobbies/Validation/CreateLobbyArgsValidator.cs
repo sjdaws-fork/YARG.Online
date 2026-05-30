@@ -20,9 +20,5 @@ public sealed class CreateLobbyArgsValidator : AbstractValidator<CreateLobbyArgs
 
         RuleFor(x => x.GameMode).IsInEnum();
         RuleFor(x => x.Region).IsInEnum();
-
-        RuleFor(x => x.Library)
-            .NotNull()
-            .SetValidator(new SongLibraryDtoValidator()!);
     }
 }
